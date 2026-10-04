@@ -28,6 +28,10 @@ class DevContractTests(unittest.TestCase):
             "binary_sha256": "a" * 64,
             "cuda_architectures": "89-real;120-real",
             "mvs_cuda_architectures": "89-real;90-virtual",
+            "mvs_codegen_policy": "upstream_blackwell_ptx_workaround",
+            "gpu_execution_validated": False,
+            "byte_exactness_inherited": False,
+            "required_gpu_validation": "fresh_reference_map_gate",
             "sweep_tile_option": "--PatchMatchStereo.sweep_tile",
             "sweep_tile_values": [0, 8, 16, 32],
             "compact_prng_default": "0",
@@ -37,6 +41,11 @@ class DevContractTests(unittest.TestCase):
             "source_commit=340f78310590cefda7cd3bb61ff0775ae5e2b59f\n"
             "binary_sha256=" + "a" * 64 + "\n"
             "cuda_architectures=89-real;120-real\n"
+            "mvs_cuda_architectures=89-real;90-virtual\n"
+            "mvs_codegen_policy=upstream_blackwell_ptx_workaround\n"
+            "gpu_execution_validated=false\n"
+            "byte_exactness_inherited=false\n"
+            "required_gpu_validation=fresh_reference_map_gate\n"
         )
         (self.directory / "binary-sha256.txt").write_text(
             "a" * 64 + "  /opt/colmap-pr8/bin/colmap\n"
@@ -67,6 +76,9 @@ class DevContractTests(unittest.TestCase):
             ("cuda_architectures", "86-real;120-real"),
             ("compact_prng_default", "1"),
             ("binary_sha256", "not-a-hash"),
+            ("gpu_execution_validated", True),
+            ("byte_exactness_inherited", True),
+            ("mvs_cuda_architectures", "89-real;120-real"),
         ):
             with self.subTest(key=key):
                 original = self.contract[key]

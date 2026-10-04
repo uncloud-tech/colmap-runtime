@@ -29,7 +29,10 @@ in `ghcr.io/uncloud-tech/colmap-runtime-dev`; consume its immutable digest.
   workaround emits **sm89 SASS + compute90 PTX** for MVS; it deliberately does
   not emit sm120 MVS SASS. The workflow matches every MVS SASS kernel entry
   against compute90 PTX per object. No GPU execution or driver-JIT validation
-  is implied by that static check.
+  is implied by that static check. The pinned source attributes the workaround
+  to NVCC native sm100+ miscompilation at -O2/-O3 (upstream issue #3514); this
+  image does not patch or bypass it. The global architecture list alone is not
+  proof of native sm120 MVS code.
 - Source/build trees are `/opt/src/colmap-pr8` and
   `/opt/src/colmap-pr8/build`. Compiler/dependency tools and optional offline
   control helpers remain available; ordinary launcher runs do not invoke them.
@@ -47,6 +50,13 @@ Upstream measurements: measured byte-exact at 1 worker/GPU; 4 workers/GPU
 validation in progress. The earlier 4-worker mismatch conclusion was withdrawn
 because an orphaned process using another binary contaminated a reused workspace.
 Neither byte-exactness nor non-exactness at 4 workers/GPU is established here.
+The image does not inherit those upstream results. It requires a fresh
+reference-map gate (the commissioned 632-map comparison) against its actual
+binary on the target GPU/driver before asserting numerical correctness. Both
+manifest and contract record `mvs_codegen_policy=upstream_blackwell_ptx_workaround`,
+`gpu_execution_validated=false`, `byte_exactness_inherited=false`, and
+`required_gpu_validation=fresh_reference_map_gate` (booleans in JSON, textual
+values in the manifest). PTX-JIT compatibility is not a byte-exactness guarantee.
 
 The image's binary SHA256 is computed during this build, not copied from a prior
 host benchmark. Workflow artifacts retain that hash and the image digest once

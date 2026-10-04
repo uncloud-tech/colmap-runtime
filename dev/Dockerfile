@@ -153,8 +153,14 @@ RUN set -eu; \
     grep -q -- '--PatchMatchStereo.sweep_tile' /opt/colmap-dev/patch-match-help.txt; \
     sha256sum /opt/colmap-pr8/bin/colmap > /opt/colmap-dev/colmap.sha256; \
     binary_sha="$(awk '{print $1}' /opt/colmap-dev/colmap.sha256)"; \
-    echo "binary_sha256=${binary_sha}" >> /opt/colmap-dev/BUILD-MANIFEST.txt; \
-    printf '{"schema_version":1,"source_repo":"https://github.com/uncloud-tech/colmap","source_commit":"%s","source_tarball_sha256":"%s","binary_path":"/opt/colmap-pr8/bin/colmap","binary_sha256":"%s","cuda_architectures":"%s","mvs_cuda_architectures":"89-real;90-virtual","sweep_tile_option":"--PatchMatchStereo.sweep_tile","sweep_tile_values":[0,8,16,32],"compact_prng_default":"0"}\n' \
+    { echo "binary_sha256=${binary_sha}"; \
+      echo 'mvs_cuda_architectures=89-real;90-virtual'; \
+      echo 'mvs_codegen_policy=upstream_blackwell_ptx_workaround'; \
+      echo 'gpu_execution_validated=false'; \
+      echo 'byte_exactness_inherited=false'; \
+      echo 'required_gpu_validation=fresh_reference_map_gate'; \
+    } >> /opt/colmap-dev/BUILD-MANIFEST.txt; \
+    printf '{"schema_version":1,"source_repo":"https://github.com/uncloud-tech/colmap","source_commit":"%s","source_tarball_sha256":"%s","binary_path":"/opt/colmap-pr8/bin/colmap","binary_sha256":"%s","cuda_architectures":"%s","mvs_cuda_architectures":"89-real;90-virtual","mvs_codegen_policy":"upstream_blackwell_ptx_workaround","gpu_execution_validated":false,"byte_exactness_inherited":false,"required_gpu_validation":"fresh_reference_map_gate","sweep_tile_option":"--PatchMatchStereo.sweep_tile","sweep_tile_values":[0,8,16,32],"compact_prng_default":"0"}\n' \
         "$COLMAP_COMMIT" "$COLMAP_TARBALL_SHA256" "$binary_sha" "$CUDA_ARCHITECTURES" \
         > /opt/colmap-dev/image-contract.json
 

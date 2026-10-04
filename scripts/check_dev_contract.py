@@ -23,6 +23,10 @@ def verify(directory):
         "binary_sha256": binary_sha,
         "cuda_architectures": "89-real;120-real",
         "mvs_cuda_architectures": "89-real;90-virtual",
+        "mvs_codegen_policy": "upstream_blackwell_ptx_workaround",
+        "gpu_execution_validated": False,
+        "byte_exactness_inherited": False,
+        "required_gpu_validation": "fresh_reference_map_gate",
         "sweep_tile_option": "--PatchMatchStereo.sweep_tile",
         "sweep_tile_values": [0, 8, 16, 32],
         "compact_prng_default": "0",
@@ -30,9 +34,21 @@ def verify(directory):
     if contract != expected:
         raise ValueError("Baked image contract does not match PR8/binary evidence")
     manifest = (directory / "BUILD-MANIFEST.txt").read_text().splitlines()
-    for key in ("source_commit", "binary_sha256", "cuda_architectures"):
+    for key in (
+        "source_commit",
+        "binary_sha256",
+        "cuda_architectures",
+        "mvs_cuda_architectures",
+        "mvs_codegen_policy",
+        "gpu_execution_validated",
+        "byte_exactness_inherited",
+        "required_gpu_validation",
+    ):
+        value = expected[key]
+        if isinstance(value, bool):
+            value = json.dumps(value)
         entries = [line for line in manifest if line.startswith(f"{key}=")]
-        if not entries or any(line != f"{key}={expected[key]}" for line in entries):
+        if not entries or any(line != f"{key}={value}" for line in entries):
             raise ValueError(f"Manifest disagrees with contract: {key}")
     if (
         "--PatchMatchStereo.sweep_tile"
