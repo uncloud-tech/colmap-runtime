@@ -13,12 +13,16 @@ spec.loader.exec_module(module)
 
 
 class DevEvidenceTests(unittest.TestCase):
-    SASS = "arch = sm_86\nFunction : _ZComputeInitialCost\nFunction : _ZSweepFromTopToBottom\nFunction : _ZInitNormalMap\n"
+    SASS = "arch = sm_89\nFunction : _ZComputeInitialCost\nFunction : _ZSweepFromTopToBottom\nFunction : _ZInitNormalMap\n"
     PTX = ".version 8.7\n.target sm_90\n.visible .entry _ZComputeInitialCost() {}\n.visible .entry _ZSweepFromTopToBottom() {}\n.visible .entry _ZInitNormalMap() {}\n"
 
-    def test_matches_functions_in_sm86_sass_and_sm90_ptx(self):
+    def test_matches_functions_in_sm89_sass_and_sm90_ptx(self):
         result = module.verify(self.SASS, self.PTX, patch_match=True)
         self.assertEqual(len(result), 3)
+
+    def test_old_fleet_architecture_is_rejected(self):
+        with self.assertRaises(ValueError):
+            module.verify(self.SASS.replace("sm_89", "sm_86"), self.PTX)
 
     def test_native_blackwell_does_not_replace_ptx(self):
         with self.assertRaises(ValueError):

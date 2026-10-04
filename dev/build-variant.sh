@@ -7,7 +7,7 @@
 #  - enforces the archive SHA256 (fresh extraction; no mutation of PR source),
 #  - for a patched variant: verifies the patch SHA256 and applies it with
 #    `git apply --check` then `git apply` (never `patch`, never v4),
-#  - configures with the IDENTICAL offline flags/dep prefix as PR#3,
+#  - configures with the IDENTICAL offline flags/dep prefix as PR#8,
 #  - preserves configure/build logs, compile_commands.json, patched .cu SHA,
 #    installed binary SHAs and the roots used.
 #
@@ -17,7 +17,7 @@
 set -euo pipefail
 NAME="${1:?usage: build-variant.sh <name> <local-tarball> <sha256> [patch] [patch-sha256]}"
 ARCHIVE="${2:?}"; SRC_SHA="${3:?}"; PATCH="${4:-}"; PATCH_SHA="${5:-}"
-ARCH="${CUDA_ARCHITECTURES:-86-real;120-real}"
+ARCH="${CUDA_ARCHITECTURES:-89-real;120-real}"
 DEP=/opt/deps
 SRC_ROOT="${SRC_ROOT:-/work/src}"
 BUILD_ROOT="${BUILD_ROOT:-/work/build}"

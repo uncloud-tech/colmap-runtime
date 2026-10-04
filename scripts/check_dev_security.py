@@ -1,4 +1,4 @@
-"""Experimental PR3-only security policy; production check_security is unchanged.
+"""Base-digest-scoped dev security policy; production check_security is unchanged.
 
 Owner approved on 2026-10-01: temporary benchmark image, no production data,
 accept linux-libc-dev header findings, delete image after confirming benchmarks.
@@ -12,11 +12,12 @@ from pathlib import Path
 import sys
 
 EXPIRES = date(2026, 10, 15)  # Exclusive; fail closed if experiments run longer.
-SOURCE = "2a5c9c81b2e77f10aad25582679c8d344c3f6694"
+# Owner clarified on 2026-10-04: scope to the identical base, not COLMAP source.
+BASE_IMAGE = "nvidia/cuda:12.8.1-devel-ubuntu24.04@sha256:4b9ed5fa8361736996499f64ecebf25d4ec37ff56e4d11323ccde10aa36e0c43"
 HEADER_VERSION = "6.8.0-55.57"
 
 
-def evaluate(report, today=None):
+def evaluate(report, today=None, base_image=None):
     today = today or date.today()
     if (
         report.get("SchemaVersion") != 2
@@ -28,6 +29,7 @@ def evaluate(report, today=None):
     os_info = report.get("Metadata", {}).get("OS", {})
     active = (
         today < EXPIRES
+        and base_image == BASE_IMAGE
         and os_info.get("Family") == "ubuntu"
         and os_info.get("Name") == "24.04"
     )
@@ -78,7 +80,7 @@ def evaluate(report, today=None):
         "raw_severity_counts": dict(counts),
         "exception_active": active,
         "exception_expires_exclusive": EXPIRES.isoformat(),
-        "source_commit": SOURCE,
+        "base_image": base_image,
         "scope": "temporary experimental benchmark image only; no production data; delete after benchmarks",
         "accepted_header_findings": accepted,
         "blocking_findings": blocked,
@@ -86,12 +88,19 @@ def evaluate(report, today=None):
 
 
 if __name__ == "__main__":
-    # Bind policy to the actual baked manifest, not just a conveniently named tag.
+    # Bind the exception to the actual baked base identity, never just a tag.
     manifest = Path(sys.argv[2]).read_text().splitlines()
-    if f"source_commit={SOURCE}" not in manifest:
-        sys.exit("Refused: exception is restricted to exact PR3 source")
+    bases = [
+        line.removeprefix("base_image=")
+        for line in manifest
+        if line.startswith("base_image=")
+    ]
+    if len(bases) != 1:
+        sys.exit("Refused: missing or ambiguous baked base identity")
     try:
-        result = evaluate(json.loads(Path(sys.argv[1]).read_text()))
+        result = evaluate(
+            json.loads(Path(sys.argv[1]).read_text()), base_image=bases[0]
+        )
     except (ValueError, TypeError, AttributeError) as error:
         sys.exit(f"Refused malformed security evidence: {error}")
     print(json.dumps(result, indent=2))

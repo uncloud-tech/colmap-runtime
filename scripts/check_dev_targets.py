@@ -1,4 +1,4 @@
-"""Fail closed on per-object, per-entry MVS sm86 SASS / compute90 PTX coverage.
+"""Fail closed on per-object, per-entry MVS sm89 SASS / compute90 PTX coverage.
 
 PTX spells the virtual compute_90 target as `.target sm_90`; an ELF listing
 alone cannot establish PTX presence. Raw cuobjdump outputs are retained separately.
@@ -12,8 +12,8 @@ import sys
 
 def verify(sass, ptx, patch_match=False):
     arches = set(re.findall(r"(?:arch\s*=\s*|code for\s+)sm_(\d+)", sass))
-    if arches != {"86"}:
-        raise ValueError(f"Expected filtered sm86 SASS, found {sorted(arches)}")
+    if arches != {"89"}:
+        raise ValueError(f"Expected filtered sm89 SASS, found {sorted(arches)}")
     native = set(re.findall(r"Function\s*:\s*(\S+)", sass))
     virtual = set()
     for section in re.split(r"(?=^\s*\.version\s)", ptx, flags=re.M):
@@ -21,7 +21,7 @@ def verify(sass, ptx, patch_match=False):
         if targets == ["90"]:
             virtual.update(re.findall(r"\.entry\s+([^\s(]+)\s*\(", section))
     if not native or not virtual:
-        raise ValueError("Missing native sm86 functions or compute90 PTX entries")
+        raise ValueError("Missing native sm89 functions or compute90 PTX entries")
     if native != virtual:
         raise ValueError(
             f"Kernel coverage mismatch: SASS-only={sorted(native - virtual)}, PTX-only={sorted(virtual - native)}"
@@ -48,7 +48,7 @@ def main(directory):
             Path(path).name == "patch_match_cuda.cu.o",
         )
         for kernel in kernels:
-            print(f"PASS {path}: {kernel}: sm_86 SASS + compute_90 PTX")
+            print(f"PASS {path}: {kernel}: sm_89 SASS + compute_90 PTX")
     print(
         "PASS: all emitted MVS kernel entries matched per object; GPU execution/JIT NOT tested"
     )

@@ -1,4 +1,4 @@
-name: Build dev image (PR#3 runtime sweep tiles)
+name: Build dev image (PR#8 memory stack)
 
 # TEMPORARY dev build, kept entirely separate from the production pipeline:
 # its own concurrency group, cache ref and image package. CPU-validated only —
@@ -46,7 +46,7 @@ jobs:
           set -euo pipefail
           printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           unset REGISTRY_TOKEN
-      - name: Build dev image (exact PR#3 tree)
+      - name: Build dev image (exact PR#8 tree)
         shell: bash
         run: |
           set -euo pipefail
@@ -56,7 +56,7 @@ jobs:
             --provenance=false --sbom=false \
             --cache-from "type=registry,ref=$cache_ref" \
             --cache-to "type=registry,ref=$cache_ref,mode=max" \
-            --tag colmap-dev:pr3 dev 2>&1 | tee reports/build.log
+            --tag colmap-dev:pr8 dev 2>&1 | tee reports/build.log
           ( grep -c 'CACHED' reports/build.log || true ) > reports/cache-hits.txt
       - name: Collect installed dependencies and run selected CPU test offline
         shell: bash
@@ -66,8 +66,10 @@ jobs:
           docker run --rm --network none --entrypoint bash \
             --mount "type=bind,source=$PWD/scripts/collect_dev_evidence.sh,target=/verification.sh,readonly" \
             --mount "type=bind,source=$PWD/reports,target=/evidence" \
-            colmap-dev:pr3 /verification.sh 2>&1 | tee reports/verification.log
-      - name: Require per-MVS-kernel sm86 SASS and compute90 PTX
+            colmap-dev:pr8 /verification.sh 2>&1 | tee reports/verification.log
+      - name: Require baked binary identity and runtime defaults
+        run: python3 scripts/check_dev_contract.py reports
+      - name: Require per-MVS-kernel sm89 SASS and compute90 PTX
         shell: bash
         run: |
           set -euo pipefail
@@ -77,18 +79,18 @@ jobs:
         run: |
           set -euo pipefail
           cat reports/BUILD-MANIFEST.txt
-          docker image inspect colmap-dev:pr3 --format '{{.Id}}' > reports/image-id.txt
+          docker image inspect colmap-dev:pr8 --format '{{.Id}}' > reports/image-id.txt
           printf '%s\n' "$GITHUB_SHA" > reports/workflow-commit.txt
-          git ls-files dev .github/workflows/build-dev.yml scripts/collect_dev_evidence.sh scripts/check_dev_targets.py scripts/check_dev_security.py > reports/dev-files.txt
+          git ls-files dev .github/workflows/build-dev.yml scripts/collect_dev_evidence.sh scripts/check_dev_contract.py scripts/check_dev_targets.py scripts/check_dev_security.py > reports/dev-files.txt
           git log -1 --format=%H -- dev > reports/image-recipe-last-change.txt
-          sha256sum dev/Dockerfile dev/*.sh scripts/collect_dev_evidence.sh scripts/check_dev_targets.py scripts/check_dev_security.py > reports/recipe-verifier-sha256.txt
+          sha256sum dev/Dockerfile dev/*.sh scripts/collect_dev_evidence.sh scripts/check_dev_contract.py scripts/check_dev_targets.py scripts/check_dev_security.py > reports/recipe-verifier-sha256.txt
           cat reports/dev-files.txt
       - name: Generate SBOM
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.74.0
           scan-type: image
-          image-ref: colmap-dev:pr3
+          image-ref: colmap-dev:pr8
           format: cyclonedx
           output: reports/sbom.cdx.json
           timeout: 10m
@@ -98,7 +100,7 @@ jobs:
         run: |
           set -euo pipefail
           trivy image --scanners vuln --format json --timeout 10m \
-            --output reports/vulnerabilities.json colmap-dev:pr3
+            --output reports/vulnerabilities.json colmap-dev:pr8
           python3 scripts/check_dev_security.py reports/vulnerabilities.json reports/BUILD-MANIFEST.txt > reports/security-gate.json 2> reports/security-gate-errors.txt
           (cd reports && sha256sum *.json *.txt *.log > SHA256SUMS)
       - name: Publish experimental dev image
@@ -109,14 +111,14 @@ jobs:
         run: |
           set -euo pipefail
           repository="ghcr.io/${GITHUB_REPOSITORY,,}-dev"
-          tag="$repository:pr3-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          tag="$repository:pr8-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           config=$(mktemp -d)
           trap 'rm -rf "$config"' EXIT
           export DOCKER_CONFIG="$config"
           printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           unset REGISTRY_TOKEN
-          test "$(docker image inspect --format '{{.Id}}' colmap-dev:pr3)" = "$(cat reports/image-id.txt)"
-          docker tag colmap-dev:pr3 "$tag"
+          test "$(docker image inspect --format '{{.Id}}' colmap-dev:pr8)" = "$(cat reports/image-id.txt)"
+          docker tag colmap-dev:pr8 "$tag"
           docker push "$tag"
           reference=$(docker image inspect --format '{{index .RepoDigests 0}}' "$tag")
           case "$reference" in "$repository"@sha256:*) ;; *) echo 'Unexpected published reference' >&2; exit 1;; esac

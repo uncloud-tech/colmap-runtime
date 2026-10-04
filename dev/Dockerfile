@@ -1,5 +1,5 @@
-# TEMPORARY DEV image: build/test ENVIRONMENT for the COLMAP runtime sweep-tile
-# work, with the exact PR#3 tree prebuilt. CPU-built only — NOT production, NOT
+# TEMPORARY DEV image: build/test ENVIRONMENT for COLMAP PR#8, with the exact
+# commissioned tree prebuilt. CPU-built only — NOT production, NOT
 # GPU-validated.
 #
 # Offline/reproducible model (per coordinator): ALL dependencies are acquired and
@@ -9,16 +9,18 @@
 #
 # - Base: CUDA 12.8.1 / Ubuntu 24.04 (amd64 digest 4b9ed5fa...). NOT 12.9: the
 #   5090 path needs PTX-JIT and 12.9 PTX may exceed driver 570.195.03's JIT support.
-# - MVS target (workaround-aware): global "86-real;120-real" yields native sm_86
+# - MVS target (workaround-aware): global "89-real;120-real" yields native sm_89
 #   SASS + compute_90 PTX (the workaround drops sm_100+ from MVS).
 # - GUI/ONNX OFF explicitly. Tests ON (GTest+GMock) for the CPU host tests.
-# - This stage is shared/immutable across pr3 | parent32 | static8.
-FROM nvidia/cuda:12.8.1-devel-ubuntu24.04@sha256:4b9ed5fa8361736996499f64ecebf25d4ec37ff56e4d11323ccde10aa36e0c43 AS toolchain
+# - The dependency prefix is shared with optional offline control builds.
+ARG CUDA_BASE_IMAGE=nvidia/cuda:12.8.1-devel-ubuntu24.04@sha256:4b9ed5fa8361736996499f64ecebf25d4ec37ff56e4d11323ccde10aa36e0c43
+FROM ${CUDA_BASE_IMAGE} AS toolchain
+ARG CUDA_BASE_IMAGE
 # pipefail so a failed command in a RUN pipeline fails the step (hadolint DL4006).
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-ARG COLMAP_COMMIT=2a5c9c81b2e77f10aad25582679c8d344c3f6694
-ARG COLMAP_TARBALL_SHA256=b9132fdd6ebb1c92969ce60c37acc29000de22e2b8c6017e5605e7b574697a69
+ARG COLMAP_COMMIT=340f78310590cefda7cd3bb61ff0775ae5e2b59f
+ARG COLMAP_TARBALL_SHA256=350f219ff4c07f68a9a834e0838d280d1a7f45884e0aa97182229401fe58695e
 ARG BOOST_VERSION=1.92.0
 ARG BOOST_SHA256=9bed76128d4e46755dbe818487788c6fceb6f72b378f4daa49b7e1e600d9088d
 ARG PARENT_COMMIT=78f41b8c6cb2629775115ee2dc3b50f21a51c4f1
@@ -29,10 +31,11 @@ ARG FAISS_VERSION=1.14.1
 ARG FAISS_SHA256=4b1ae7e7a0a46385b4084f0e3945623a15fcf99d793bf44d82aae8e24f11e5f5
 ARG GTEST_COMMIT=063de7e9578f82b369302001269680b4b1553359
 ARG GTEST_SHA256=623fe05d283020f37a579a8985ba338091ac7229da62b5591ff40acdf05b95e2
-ARG CUDA_ARCHITECTURES="86-real;120-real"
+ARG CUDA_ARCHITECTURES="89-real;120-real"
 
 ENV DEBIAN_FRONTEND=noninteractive
-LABEL org.opencontainers.image.description="DEV build/test env: COLMAP PR#3 (runtime sweep tiles); CPU-built, offline deps, not GPU-validated"
+LABEL org.opencontainers.image.description="DEV build/test env: COLMAP PR#8; CPU-built, offline deps, not GPU-validated"
+LABEL org.uncloud.colmap.source.commit="${COLMAP_COMMIT}"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl git cmake ninja-build build-essential ccache unzip xz-utils \
@@ -45,7 +48,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Exported runtime libraries of the shared deps + COLMAP install, so the built
 # binaries/tests resolve them offline (no network, no host installs).
-ENV LD_LIBRARY_PATH=/opt/deps/lib:/opt/colmap-pr3/lib
+ENV LD_LIBRARY_PATH=/opt/deps/lib:/opt/colmap-pr8/lib
+ENV PATH=/opt/colmap-pr8/bin:${PATH}
+# Benchmark-only opt-in; callers may explicitly set 1 for seed-0 geometric runs.
+ENV COLMAP_PATCH_MATCH_COMPACT_PRNG=0
 
 # ---- ACQUIRE + INSTALL pinned deps into the shared prefix /opt/deps (network) ----
 RUN set -eux; \
@@ -82,10 +88,10 @@ RUN set -eux; \
     \
     curl -fsSL "https://codeload.github.com/uncloud-tech/colmap/tar.gz/${COLMAP_COMMIT}" -o /tmp/colmap.tar.gz; \
     echo "${COLMAP_TARBALL_SHA256}  /tmp/colmap.tar.gz" | sha256sum -c -; \
-    mkdir -p /opt/src/colmap-pr3; tar -xzf /tmp/colmap.tar.gz -C /opt/src/colmap-pr3 --strip-components=1; \
+    mkdir -p /opt/src/colmap-pr8; tar -xzf /tmp/colmap.tar.gz -C /opt/src/colmap-pr8 --strip-components=1; \
     rm -f /tmp/colmap.tar.gz; \
-    git -C /opt/src/colmap-pr3 init -q; git -C /opt/src/colmap-pr3 add -A; \
-    git -C /opt/src/colmap-pr3 -c user.email=dev@local -c user.name=dev commit -qm "colmap PR#3 ${COLMAP_COMMIT}"
+    git -C /opt/src/colmap-pr8 init -q; git -C /opt/src/colmap-pr8 add -A; \
+    git -C /opt/src/colmap-pr8 -c user.email=dev@local -c user.name=dev commit -qm "colmap PR#8 ${COLMAP_COMMIT}"
 
 # Bake the EXACT parent (78f41b8c) archive so controls build fully offline from a
 # LOCAL verified tarball (sha enforced) with its own writable tree.
@@ -98,6 +104,7 @@ RUN mkdir -p /opt/archives && \
 
 # Record the immutable dependency/toolchain manifest (source/dep hashes, toolchain).
 RUN { echo "image=colmap-dev"; echo "source_repo=https://github.com/uncloud-tech/colmap"; \
+      echo "base_image=${CUDA_BASE_IMAGE}"; \
       echo "source_commit=${COLMAP_COMMIT}"; echo "source_tarball_sha256=${COLMAP_TARBALL_SHA256}"; \
       echo "boost_version=${BOOST_VERSION}"; echo "boost_sha256=${BOOST_SHA256}"; \
       echo "poselib_commit=${POSELIB_COMMIT}"; echo "poselib_sha256=${POSELIB_SHA256}"; \
@@ -114,36 +121,54 @@ RUN { echo "image=colmap-dev"; echo "source_repo=https://github.com/uncloud-tech
     } > /opt/colmap-dev/BUILD-MANIFEST.txt
 
 # ---- COLMAP configure/build: OFFLINE (no network), explicit dep paths ----
-FROM toolchain AS dev-pr3
-ARG CUDA_ARCHITECTURES="86-real;120-real"
-RUN --network=none cmake -S /opt/src/colmap-pr3 -B /opt/src/colmap-pr3/build -GNinja \
+FROM toolchain AS dev-pr8
+ARG CUDA_ARCHITECTURES="89-real;120-real"
+RUN --network=none cmake -S /opt/src/colmap-pr8 -B /opt/src/colmap-pr8/build -GNinja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCUDA_ENABLED=ON -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" \
         -DONNX_ENABLED=OFF -DGUI_ENABLED=OFF -DCGAL_ENABLED=OFF -DLSD_ENABLED=OFF \
         -DCASPAR_ENABLED=OFF -DBUILD_SHARED_LIBS=OFF -DTESTS_ENABLED=ON \
         -DFETCH_BOOST=OFF -DFETCH_POSELIB=OFF -DFETCH_FAISS=OFF -DFETCH_ONNX=OFF \
         -DCMAKE_PREFIX_PATH=/opt/deps -DBOOST_ROOT=/opt/deps \
-        -DCMAKE_INSTALL_PREFIX=/opt/colmap-pr3 && \
-    cmake --build /opt/src/colmap-pr3/build -j"$(nproc)" && \
-    cmake --install /opt/src/colmap-pr3/build
+        -DCMAKE_INSTALL_PREFIX=/opt/colmap-pr8 && \
+    cmake --build /opt/src/colmap-pr8/build -j"$(nproc)" && \
+    cmake --install /opt/src/colmap-pr8/build
 
 # Append the EXACT executed Release/CUDA flags (shared across all arms) and the
 # runtime-library resolution to the manifest, so the flags are auditable.
 RUN { echo "--- executed build flags ---"; \
       echo "cmake_build_type=Release"; \
       echo "cuda_architectures=${CUDA_ARCHITECTURES}"; \
-      grep -m1 '^CMAKE_CXX_FLAGS:' /opt/src/colmap-pr3/build/CMakeCache.txt || true; \
-      grep -m1 '^CMAKE_CUDA_FLAGS:' /opt/src/colmap-pr3/build/CMakeCache.txt || true; \
+      grep -m1 '^CMAKE_CXX_FLAGS:' /opt/src/colmap-pr8/build/CMakeCache.txt || true; \
+      grep -m1 '^CMAKE_CUDA_FLAGS:' /opt/src/colmap-pr8/build/CMakeCache.txt || true; \
       echo "ld_library_path=${LD_LIBRARY_PATH}"; \
-      fast_math="$(grep -m1 'use_fast_math' /opt/src/colmap-pr3/build/CMakeCache.txt || true)"; \
+      fast_math="$(grep -m1 'use_fast_math' /opt/src/colmap-pr8/build/CMakeCache.txt || true)"; \
       if [ -n "$fast_math" ]; then echo "fast_math=on"; else echo "fast_math=off"; fi; \
     } >> /opt/colmap-dev/BUILD-MANIFEST.txt
+
+# Identity is computed from THIS installed binary, never from a previous host.
+# Runtime tile selection stays in the upstream CLI; no tile compiler override.
+RUN set -eu; \
+    colmap patch_match_stereo -h > /opt/colmap-dev/patch-match-help.txt 2>&1; \
+    grep -q -- '--PatchMatchStereo.sweep_tile' /opt/colmap-dev/patch-match-help.txt; \
+    sha256sum /opt/colmap-pr8/bin/colmap > /opt/colmap-dev/colmap.sha256; \
+    binary_sha="$(awk '{print $1}' /opt/colmap-dev/colmap.sha256)"; \
+    { echo "binary_sha256=${binary_sha}"; \
+      echo 'mvs_cuda_architectures=89-real;90-virtual'; \
+      echo 'mvs_codegen_policy=upstream_blackwell_ptx_workaround'; \
+      echo 'gpu_execution_validated=false'; \
+      echo 'byte_exactness_inherited=false'; \
+      echo 'required_gpu_validation=fresh_reference_map_gate'; \
+    } >> /opt/colmap-dev/BUILD-MANIFEST.txt; \
+    printf '{"schema_version":1,"source_repo":"https://github.com/uncloud-tech/colmap","source_commit":"%s","source_tarball_sha256":"%s","binary_path":"/opt/colmap-pr8/bin/colmap","binary_sha256":"%s","cuda_architectures":"%s","mvs_cuda_architectures":"89-real;90-virtual","mvs_codegen_policy":"upstream_blackwell_ptx_workaround","gpu_execution_validated":false,"byte_exactness_inherited":false,"required_gpu_validation":"fresh_reference_map_gate","sweep_tile_option":"--PatchMatchStereo.sweep_tile","sweep_tile_values":[0,8,16,32],"compact_prng_default":"0"}\n' \
+        "$COLMAP_COMMIT" "$COLMAP_TARBALL_SHA256" "$binary_sha" "$CUDA_ARCHITECTURES" \
+        > /opt/colmap-dev/image-contract.json
 
 # Stable entrypoint + unprivileged operation (harness runs as UID 1002).
 COPY build-variant.sh verify-targets.sh entrypoint.sh build-asan.sh /opt/colmap-dev/
 COPY patches/ /opt/colmap-dev/patches/
 RUN chmod +x /opt/colmap-dev/*.sh \
-    && chmod -R a+rX /opt/colmap-pr3 /opt/colmap-dev /opt/deps /opt/src /opt/archives \
+    && chmod -R a+rX /opt/colmap-pr8 /opt/colmap-dev /opt/deps /opt/src /opt/archives \
     && chmod -R 0777 /work
 ENTRYPOINT ["/opt/colmap-dev/entrypoint.sh"]
 
@@ -151,11 +176,11 @@ ENTRYPOINT ["/opt/colmap-dev/entrypoint.sh"]
 # compiler headers identically for candidate and on-demand controls.
 # Owner approved linux-libc-dev header findings for this disposable experiment;
 # that exception does NOT cover GnuPG or the bundled Nsight Go executable.
-FROM dev-pr3 AS dev-experimental
+FROM dev-pr8 AS dev-experimental
 ARG GNUPG_VERSION=2.4.4-2ubuntu17.6
 RUN set -eux; \
     mkdir -p /opt/colmap-dev/security-remediation; \
-    sha256sum /opt/colmap-pr3/bin/colmap /usr/local/cuda/bin/nvcc \
+    sha256sum /opt/colmap-pr8/bin/colmap /usr/local/cuda/bin/nvcc \
         /usr/local/cuda/bin/cuobjdump /usr/local/cuda/bin/compute-sanitizer \
         > /opt/colmap-dev/security-remediation/retained-binaries.sha256; \
     dpkg-query -W -f='${Package} ${Version}\n' linux-libc-dev libc6 libc6-dev libstdc++6 libgcc-s1 \
@@ -190,4 +215,4 @@ RUN set -eux; \
         'Delete this image after confirming benchmarks; no production promotion.' \
         'GnuPG updated; Nsight Compute omitted (may be installed separately for profiling).' \
         > /opt/colmap-dev/EXPERIMENTAL-USE.txt
-LABEL org.opencontainers.image.description="TEMPORARY experimental COLMAP PR3 dev image; no production data; accepted header findings; delete after confirming benchmarks"
+LABEL org.opencontainers.image.description="TEMPORARY experimental COLMAP PR8 dev image; no production data; accepted header findings; delete after confirming benchmarks"

@@ -3,7 +3,7 @@
 # NOT a full COLMAP sanitizer rebuild — plus an optimized standalone build.
 # Usage: build-asan.sh [source-dir] [out-dir]
 set -euo pipefail
-SRC="${1:-/src/colmap-pr3}"
+SRC="${1:-/opt/src/colmap-pr8}"
 OUT="${2:-/work/build}"
 mkdir -p "$OUT"
 TEST="$SRC/src/colmap/mvs/sweep_tile_test.cc"

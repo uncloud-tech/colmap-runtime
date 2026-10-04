@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # External verification only. Mount read-only; do not modify the cached image.
 set -euo pipefail
-SRC=/opt/src/colmap-pr3
+SRC=/opt/src/colmap-pr8
 BUILD="$SRC/build"
 OUT=/evidence
 mkdir -p "$OUT"
 test -f "$BUILD/CMakeCache.txt"
-test -x /opt/colmap-pr3/bin/colmap
+test -x /opt/colmap-pr8/bin/colmap
+sha256sum -c /opt/colmap-dev/colmap.sha256
+cp /opt/colmap-dev/image-contract.json "$OUT/image-contract.json"
+colmap patch_match_stereo -h > "$OUT/patch-match-help.txt" 2>&1
+printf 'COLMAP_PATCH_MATCH_COMPACT_PRNG=%s\ncolmap=%s\n' \
+  "${COLMAP_PATCH_MATCH_COMPACT_PRNG:?}" "$(command -v colmap)" > "$OUT/runtime-defaults.txt"
 cp /opt/colmap-dev/BUILD-MANIFEST.txt "$OUT/BUILD-MANIFEST.txt"
 cp /opt/colmap-dev/EXPERIMENTAL-USE.txt "$OUT/EXPERIMENTAL-USE.txt"
 cp -r /opt/colmap-dev/security-remediation "$OUT/security-remediation"
@@ -25,12 +30,13 @@ nvcc --version > "$OUT/nvcc.txt"
 g++ --version > "$OUT/compiler.txt"
 dpkg-query -W -f='${Package}\t${Version}\n' > "$OUT/system-packages.txt"
 find /opt/deps -type f | sort > "$OUT/installed-dependency-files.txt"
-sha256sum /opt/colmap-pr3/bin/colmap > "$OUT/binary-sha256.txt"
-ldd /opt/colmap-pr3/bin/colmap > "$OUT/installed-library-resolution.txt"
+sha256sum /opt/colmap-pr8/bin/colmap > "$OUT/binary-sha256.txt"
+ldd /opt/colmap-pr8/bin/colmap > "$OUT/installed-library-resolution.txt"
 if grep -q 'not found' "$OUT/installed-library-resolution.txt"; then
   echo 'FAIL: installed binary has unresolved runtime libraries' >&2; exit 1
 fi
-grep -q '^source_commit=2a5c9c81b2e77f10aad25582679c8d344c3f6694$' "$OUT/BUILD-MANIFEST.txt"
+grep -q '^source_commit=340f78310590cefda7cd3bb61ff0775ae5e2b59f$' "$OUT/BUILD-MANIFEST.txt"
+grep -q '^cuda_architectures=89-real;120-real$' "$OUT/BUILD-MANIFEST.txt"
 {
   echo 'Original image BUILD-MANIFEST.txt is retained without correction.'
   echo 'fast_math and other directory-scoped flags: use mvs-nvcc-command-recipe.txt, not manifest inference.'
@@ -53,7 +59,7 @@ printf '%s  %s\n' 9f132c88a3b2b8b6b8680c5eff4a20dc1dbd96fe2da1f47f4356c5d5aedb85
   /opt/archives/colmap-parent-78f41b8c6cb2629775115ee2dc3b50f21a51c4f1.tar.gz | sha256sum -c -
 {
   echo 'Baked verify-targets.sh is superseded by the mounted external verification for this run.'
-  echo 'Baked build-asan.sh default source path is stale: caller must explicitly supply /opt/src/colmap-pr3.'
+  echo 'Baked helper defaults point to the PR8 source/build tree.'
   echo 'UID1002 control/helper execution and standalone sanitizer execution are NOT validated here.'
 } > "$OUT/helper-limitations.txt"
 {
@@ -91,7 +97,7 @@ for i in "${!objects[@]}"; do
   sha256sum "$f" >> "$OUT/mvs-object-sha256.txt"
   cuobjdump --list-elf "$f" > "$OUT/mvs-$i.elf-list.txt"
   cuobjdump --list-ptx "$f" > "$OUT/mvs-$i.ptx-list.txt"
-  cuobjdump --dump-sass --gpu-architecture sm_86 "$f" > "$OUT/mvs-$i.sass.txt"
+  cuobjdump --dump-sass --gpu-architecture sm_89 "$f" > "$OUT/mvs-$i.sass.txt"
   cuobjdump --dump-ptx "$f" > "$OUT/mvs-$i.ptx.txt"
 done
 printf ']\n' >> "$OUT/mvs-objects.json"
