@@ -14,7 +14,15 @@ workflow are unchanged.
 
 ## Scope enforced by scripts/check_dev_security.py
 
-- Exact baked COLMAP source: `2a5c9c81b2e77f10aad25582679c8d344c3f6694`.
+- Exact CUDA base image:
+  `nvidia/cuda:12.8.1-devel-ubuntu24.04@sha256:4b9ed5fa8361736996499f64ecebf25d4ec37ff56e4d11323ccde10aa36e0c43`.
+  The Dockerfile records the same build argument used by `FROM` in the baked
+  manifest; missing/ambiguous base identity fails closed. A different base does
+  not receive the header exception.
+- On 2026-10-04 the owner approved applying the same narrow exception to PR8
+  and binding it to the base digest instead of the COLMAP source commit. This
+  is a scope clarification for the identical base/package finding, not an
+  expiry extension or a waiver of other HIGH/CRITICAL findings.
 - Ubuntu 24.04 OS-package result, package `linux-libc-dev`, installed version
   `6.8.0-55.57` only. No kernel-image, kernel-module, user-space package, bundled
   Go binary, other version or ecosystem receives this exception.

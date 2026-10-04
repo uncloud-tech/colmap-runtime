@@ -36,7 +36,11 @@ class DevSecurityTests(unittest.TestCase):
         }
 
     def check(self, report, today=date(2026, 10, 1)):
-        return evaluate(report, today=today)
+        return evaluate(
+            report,
+            today=today,
+            base_image="nvidia/cuda:12.8.1-devel-ubuntu24.04@sha256:4b9ed5fa8361736996499f64ecebf25d4ec37ff56e4d11323ccde10aa36e0c43",
+        )
 
     def test_only_named_header_package_can_receive_exception(self):
         result = self.check(self.report())
@@ -58,6 +62,15 @@ class DevSecurityTests(unittest.TestCase):
         self.assertFalse(self.check(self.report(version="other"))["gate_passed"])
         self.assertFalse(self.check(self.report(kind="gobinary"))["gate_passed"])
 
+    def test_wrong_or_missing_base_cannot_receive_exception(self):
+        for base in (None, "nvidia/cuda:other@sha256:" + "a" * 64):
+            with self.subTest(base=base):
+                result = evaluate(
+                    self.report(), today=date(2026, 10, 4), base_image=base
+                )
+                self.assertFalse(result["gate_passed"])
+                self.assertFalse(result["exception_active"])
+
     def test_expired_exception_blocks_findings(self):
         result = self.check(self.report(), today=date(2026, 10, 15))
         self.assertFalse(result["gate_passed"])
@@ -78,7 +91,11 @@ class DevSecurityTests(unittest.TestCase):
         dockerfile = (
             Path(__file__).resolve().parents[1] / "dev/Dockerfile"
         ).read_text()
-        guard = re.search(r"awk '([^']+)'", dockerfile).group(1)
+        guard = next(
+            expression
+            for expression in re.findall(r"awk '([^']+)'", dockerfile)
+            if expression.startswith("/^(Remv|Purg) /")
+        )
         allowed = "Purg cuda-nsight-compute-12-8 [12.8.1-1]\nPurg nsight-compute-2025.1.1 [2025.1.1.2-1]\n"
         for plan, expected in (
             (allowed, 0),
