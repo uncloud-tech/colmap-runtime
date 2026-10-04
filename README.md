@@ -176,3 +176,10 @@ Dependencies retain their own licences, including NVIDIA CUDA redistribution
 conditions. See `image/THIRD_PARTY_NOTICES.md`. Publication requires publisher acknowledgement of those conditions and passing
 security gates. This repository does not relicense
 third-party binaries.
+
+## License
+
+This repository's own source code is licensed under the MIT License; see
+[`LICENSE`](LICENSE). Third-party components, including those redistributed in
+the container image, are not relicensed and remain under their own terms; see
+[Third-party software](#third-party-software) and `image/THIRD_PARTY_NOTICES.md`.
