@@ -97,11 +97,29 @@ jobs:
           set -euo pipefail
           python3 -m venv /tmp/ci-venv
           /tmp/ci-venv/bin/pip install --disable-pip-version-check \
-            bandit==1.9.4 pip-audit==2.10.1 semgrep==1.179.0
+            bandit==1.9.4 semgrep==1.179.0
       # Report-only: findings are printed to the job log and never fail the job.
       - name: bandit (report only)
         run: /tmp/ci-venv/bin/bandit -r scripts -f txt || true
-      - name: pip-audit (report only)
-        run: /tmp/ci-venv/bin/pip-audit -r image/requirements.lock || true
       - name: semgrep (report only)
         run: /tmp/ci-venv/bin/semgrep scan --config p/python --quiet || true
+
+  deps-audit:
+    name: deps-audit (report only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # requirements.lock pins cp314 wheels (the runtime interpreter), so the
+      # audit must run under the same Python minor version or resolution fails
+      # against the pinned hashes.
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v7.0.0
+        with:
+          python-version: '3.14'
+      - name: Install pip-audit
+        run: python3 -m pip install --disable-pip-version-check pip-audit==2.10.1
+      # Report-only: findings are printed to the job log and never fail the job.
+      - name: pip-audit (report only)
+        run: pip-audit -r image/requirements.lock || true
