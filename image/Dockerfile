@@ -1,4 +1,7 @@
 FROM nvidia/cuda@sha256:1199283a7fd5fc7dcb472ea4c6b6d8eb378ef8c0b9aae5e731491c01a219ca43 AS base
+# pipefail so a failed command in a RUN pipeline fails the step (hadolint
+# DL4006). Declared per stage because each FROM may start with a fresh shell.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 LABEL org.opencontainers.image.source="https://github.com/uncloud-tech/colmap-runtime"
 LABEL org.opencontainers.image.description="Pinned CUDA-enabled PyCOLMAP runtime; GPU validation requires a separate test"
 
@@ -46,6 +49,7 @@ ENV PATH="/opt/colmap-runtime/python/bin:${PATH}" \
 # execution and reconstruction quality require the separate GPU canary.
 # ---------------------------------------------------------------------------
 FROM nvidia/cuda@sha256:020bc241a628776338f4d4053fed4c38f6f7f3d7eb5919fecb8de313bb8ba47c AS pycolmap-builder
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG COLMAP_VERSION=4.2.0
 ARG COLMAP_TARBALL_SHA256=b61731fb1a4a33609e64fb353fe589d483be6a73878a5965b7d32ae23fb22fc5
 ARG COLMAP_PATCH_SHA256=c0ebc12088595049b070e00363df6ad23b0087c61a99c36660b1e7316d65dcce
@@ -85,13 +89,13 @@ RUN echo "${COLMAP_TARBALL_SHA256}  colmap.tar.gz" > /tmp/sums && \
         "https://codeload.github.com/colmap/colmap/tar.gz/refs/tags/${COLMAP_VERSION}" -o colmap.tar.gz && \
     sha256sum -c /tmp/sums && \
     mkdir source && tar -xzf colmap.tar.gz -C source --strip-components=1 && \
-    cd source && patch -p1 < /build/patch_match_cuda.2streams.patch && \
-    cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=Release \
+    patch -d source -p1 < /build/patch_match_cuda.2streams.patch && \
+    cmake -S source -B source/build -GNinja -DCMAKE_BUILD_TYPE=Release \
         -DCUDA_ENABLED=ON -DCMAKE_CUDA_ARCHITECTURES="70;75;86;89;120" \
         -DGUI_ENABLED=OFF -DCGAL_ENABLED=OFF -DLSD_ENABLED=OFF \
         -DONNX_ENABLED=OFF -DCASPAR_ENABLED=OFF -DBUILD_SHARED_LIBS=OFF \
         -DCMAKE_INSTALL_PREFIX=/opt/colmap && \
-    cmake --build build -j"$(nproc)" && cmake --install build
+    cmake --build source/build -j"$(nproc)" && cmake --install source/build
 # Build the pycolmap wheel against the patched, installed COLMAP. Stub
 # generation is disabled so no extra stub tooling is required.
 # Override Python's build-time clang preference inherited by scikit-build-core;
@@ -105,6 +109,7 @@ RUN mkdir -p /opt/wheels && \
     ls -l /opt/wheels
 
 FROM base AS builder
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 COPY runtime-lock.json requirements.lock THIRD_PARTY_NOTICES.md /opt/colmap-runtime/
 # benchmark-v4: the source-built, patched PyCOLMAP wheel (produced by the
 # pycolmap-builder stage) replaces the pinned pycolmap wheel.
@@ -136,6 +141,7 @@ COPY verify_runtime.py /opt/colmap-runtime/verify_runtime.py
 # follow-up (Apache-2.0); it needs cmake and Boost, so it is deliberately not in
 # this stage yet.
 FROM nvidia/cuda@sha256:020bc241a628776338f4d4053fed4c38f6f7f3d7eb5919fecb8de313bb8ba47c AS babelstream
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG BABELSTREAM_SHA256=63aab1bc42a1e953dcae26e279ab100866f8491ab5ce7167269f2ca4b16bb2fb
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates curl cmake make g++ && rm -rf /var/lib/apt/lists/*

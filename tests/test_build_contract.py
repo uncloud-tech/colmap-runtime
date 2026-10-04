@@ -248,11 +248,15 @@ class BuildContractTests(unittest.TestCase):
         # The verified tarball and patch must be applied before CMake configures.
         self.assertLess(
             dockerfile.index("sha256sum -c /tmp/sums"),
-            dockerfile.index("patch -p1 < /build/patch_match_cuda.2streams.patch"),
+            dockerfile.index(
+                "patch -d source -p1 < /build/patch_match_cuda.2streams.patch"
+            ),
         )
         self.assertLess(
-            dockerfile.index("patch -p1 < /build/patch_match_cuda.2streams.patch"),
-            dockerfile.index("cmake -S . -B build"),
+            dockerfile.index(
+                "patch -d source -p1 < /build/patch_match_cuda.2streams.patch"
+            ),
+            dockerfile.index("cmake -S source -B source/build"),
         )
         self.assertIn("-DCUDA_ENABLED=ON", dockerfile)
         self.assertIn('-DCMAKE_CUDA_ARCHITECTURES="70;75;86;89;120"', dockerfile)

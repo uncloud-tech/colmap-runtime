@@ -14,6 +14,8 @@
 # - GUI/ONNX OFF explicitly. Tests ON (GTest+GMock) for the CPU host tests.
 # - This stage is shared/immutable across pr3 | parent32 | static8.
 FROM nvidia/cuda:12.8.1-devel-ubuntu24.04@sha256:4b9ed5fa8361736996499f64ecebf25d4ec37ff56e4d11323ccde10aa36e0c43 AS toolchain
+# pipefail so a failed command in a RUN pipeline fails the step (hadolint DL4006).
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ARG COLMAP_COMMIT=2a5c9c81b2e77f10aad25582679c8d344c3f6694
 ARG COLMAP_TARBALL_SHA256=b9132fdd6ebb1c92969ce60c37acc29000de22e2b8c6017e5605e7b574697a69
@@ -133,7 +135,8 @@ RUN { echo "--- executed build flags ---"; \
       grep -m1 '^CMAKE_CXX_FLAGS:' /opt/src/colmap-pr3/build/CMakeCache.txt || true; \
       grep -m1 '^CMAKE_CUDA_FLAGS:' /opt/src/colmap-pr3/build/CMakeCache.txt || true; \
       echo "ld_library_path=${LD_LIBRARY_PATH}"; \
-      echo "fast_math=$([ -n \"$(grep -m1 'use_fast_math' /opt/src/colmap-pr3/build/CMakeCache.txt || true)\" ] && echo on || echo off)"; \
+      fast_math="$(grep -m1 'use_fast_math' /opt/src/colmap-pr3/build/CMakeCache.txt || true)"; \
+      if [ -n "$fast_math" ]; then echo "fast_math=on"; else echo "fast_math=off"; fi; \
     } >> /opt/colmap-dev/BUILD-MANIFEST.txt
 
 # Stable entrypoint + unprivileged operation (harness runs as UID 1002).
