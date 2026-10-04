@@ -1,0 +1,125 @@
+name: Review
+
+# PR review gates for this repository.
+#
+# Everything here runs as a workflow job, so each job's pass/fail can be made a
+# required status check by a ruleset on main (Settings > Rules). The blocking
+# tiers fail closed. The security tier is report-only: it prints findings but
+# always exits 0, so it does not wedge the queue while the findings are triaged.
+#
+# No secrets are used, so these jobs also run on pull requests from forks (which
+# do not receive repository secrets). Jobs use GitHub-hosted runners; the
+# build workflow uses Blacksmith for the heavy image build.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Unit tests
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -m unittest discover -s tests -v
+
+  python-lint:
+    name: python-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install ruff
+        run: |
+          set -euo pipefail
+          # Pinned to the sanecode harness version (spec/01 decision 47).
+          python3 -m venv /tmp/ci-venv
+          /tmp/ci-venv/bin/pip install --disable-pip-version-check ruff==0.16.8
+      - name: ruff format --check
+        run: /tmp/ci-venv/bin/ruff format --check .
+      - name: ruff check
+        run: /tmp/ci-venv/bin/ruff check .
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        run: git ls-files -z '*.sh' | xargs -0 -r shellcheck
+
+  hadolint:
+    name: hadolint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install hadolint
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/hadolint \
+            https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-linux-x86_64
+          echo "c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507  /tmp/hadolint" | sha256sum -c -
+          chmod +x /tmp/hadolint
+      - name: hadolint
+        run: /tmp/hadolint --config .hadolint.yaml image/Dockerfile dev/Dockerfile
+
+  security-review:
+    name: security-review (report only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install review tools
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/ci-venv
+          /tmp/ci-venv/bin/pip install --disable-pip-version-check \
+            bandit==1.9.4 semgrep==1.179.0
+      # Report-only: findings are printed to the job log and never fail the job.
+      - name: bandit (report only)
+        run: /tmp/ci-venv/bin/bandit -r scripts -f txt || true
+      - name: semgrep (report only)
+        run: /tmp/ci-venv/bin/semgrep scan --config p/python --quiet || true
+
+  deps-audit:
+    name: deps-audit (report only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # requirements.lock pins cp314 wheels (the runtime interpreter), so the
+      # audit must run under the same Python minor version or resolution fails
+      # against the pinned hashes.
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v7.0.0
+        with:
+          python-version: '3.14'
+      - name: Install pip-audit
+        run: python3 -m pip install --disable-pip-version-check pip-audit==2.10.1
+      # Report-only: findings are printed to the job log and never fail the job.
+      - name: pip-audit (report only)
+        run: pip-audit -r image/requirements.lock || true

@@ -1,0 +1,9 @@
+# hadolint configuration for this repository.
+#
+# DL3008 (pin versions in apt-get install) is deliberately not enforced: the
+# base stage re-resolves Ubuntu security updates at build time and refreshes
+# them at least weekly via the APT_REFRESH build argument, so pinning apt
+# versions would freeze security fixes. See image/runtime-lock.json
+# ("apt_policy") and the base-stage comment in image/Dockerfile.
+ignored:
+  - DL3008

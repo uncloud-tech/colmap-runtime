@@ -40,12 +40,18 @@ done
 
 echo; echo "== gate (MVS scope; workaround-aware) =="
 rc=0
-printf '%s\n' "$ELF" | grep -q 'sm_86' \
-  && echo "PASS: native sm_86 present (RTX 3090 served)" \
-  || { echo "FAIL: no sm_86 in MVS -- RTX 3090 not served"; rc=1; }
-printf '%s\n' "$ELF" | grep -q 'compute_90' \
-  && echo "PASS: compute_90 PTX present (RTX 5090 served via PTX-JIT)" \
-  || { echo "FAIL: no compute_90 PTX in MVS -- 5090 path not served"; rc=1; }
+if printf '%s\n' "$ELF" | grep -q 'sm_86'; then
+  echo "PASS: native sm_86 present (RTX 3090 served)"
+else
+  echo "FAIL: no sm_86 in MVS -- RTX 3090 not served"
+  rc=1
+fi
+if printf '%s\n' "$ELF" | grep -q 'compute_90'; then
+  echo "PASS: compute_90 PTX present (RTX 5090 served via PTX-JIT)"
+else
+  echo "FAIL: no compute_90 PTX in MVS -- 5090 path not served"
+  rc=1
+fi
 if printf '%s\n' "$ELF" | grep -qE 'sm_100|sm_120'; then
   echo "NOTE: sm_100/sm_120 appears in MVS (unexpected per the workaround; non-fatal)"
 else
