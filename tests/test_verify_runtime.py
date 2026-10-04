@@ -1,8 +1,8 @@
 import importlib.util
 import json
 from pathlib import Path
-import tempfile
 import sys
+import tempfile
 import types
 import unittest
 from unittest.mock import patch
@@ -42,17 +42,19 @@ class VerifierTests(unittest.TestCase):
                     verifier.assert_installer_free(root)
 
     def test_wrong_python_fails_before_imports(self):
-        with patch.object(verifier.platform, "python_version", return_value="3.12.0"):
-            with self.assertRaisesRegex(RuntimeError, "Python version"):
-                verifier.verify("cpu", self.lock)
+        with (
+            patch.object(verifier.platform, "python_version", return_value="3.12.0"),
+            self.assertRaisesRegex(RuntimeError, "Python version"),
+        ):
+            verifier.verify("cpu", self.lock)
 
     def test_wrong_dependency_fails_before_imports(self):
         with (
             patch.object(verifier.platform, "python_version", return_value="3.14.7"),
             patch.object(verifier.importlib.metadata, "version", return_value="2.0"),
+            self.assertRaisesRegex(RuntimeError, "Version mismatch"),
         ):
-            with self.assertRaisesRegex(RuntimeError, "Version mismatch"):
-                verifier.verify("cpu", self.lock)
+            verifier.verify("cpu", self.lock)
 
     def test_loaded_cuda_must_use_pinned_pip_provider(self):
         self.assertTrue(

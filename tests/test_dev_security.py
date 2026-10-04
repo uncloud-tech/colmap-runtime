@@ -65,9 +65,8 @@ class DevSecurityTests(unittest.TestCase):
 
     def test_invalid_report_fails_closed(self):
         for report in ({}, self.report(severity="INVALID")):
-            with self.subTest(report=report):
-                with self.assertRaises(ValueError):
-                    self.check(report)
+            with self.subTest(report=report), self.assertRaises(ValueError):
+                self.check(report)
 
     def test_clean_scan_has_no_exception_findings(self):
         result = self.check(self.report(package="gpg", severity="LOW"))
