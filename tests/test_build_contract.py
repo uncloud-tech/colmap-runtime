@@ -137,7 +137,9 @@ class BuildContractTests(unittest.TestCase):
         self.assertNotIn("-march=native", configure)
         # The produced host code must be checked, and the check must run before
         # the binary is installed, so a failing build never lands in the image.
-        self.assertRegex(dockerfile, r"objdump -d build/cuda-stream \| grep -Eq")
+        self.assertIn(
+            "objdump -d build/cuda-stream > build/cuda-stream.disassembly", dockerfile
+        )
         self.assertLess(
             dockerfile.index("objdump -d build/cuda-stream"),
             dockerfile.index("install -m 0755 build/cuda-stream"),
@@ -145,9 +147,7 @@ class BuildContractTests(unittest.TestCase):
 
     def _babelstream_isa_guard_pattern(self):
         dockerfile = (ROOT / "image/Dockerfile").read_text()
-        match = re.search(
-            r"objdump -d build/cuda-stream \| grep -Eq '([^']+)'", dockerfile
-        )
+        match = re.search(r"grep -Eq '([^']+)'", dockerfile)
         self.assertIsNotNone(
             match, "the babelstream ISA guard must be present in the Dockerfile"
         )
@@ -210,6 +210,58 @@ class BuildContractTests(unittest.TestCase):
                     expect_hit,
                     f"{label} sample: guard match expected to be {expect_hit}",
                 )
+
+    def test_babelstream_isa_guard_fails_closed_under_pipefail(self):
+        """Exercise the Docker RUN guard, including large-output SIGPIPE cases."""
+        if not all(shutil.which(tool) for tool in ("g++", "objdump", "bash")):
+            self.skipTest("g++/objdump/bash not available")
+        dockerfile = (ROOT / "image/Dockerfile").read_text()
+        start = dockerfile.index(' && cmake --build build -j"$(nproc)"')
+        start = dockerfile.index("\n", start) + 1
+        end = dockerfile.index(" && install -m 0755 build/cuda-stream", start)
+        # Execute the actual guard with the stage's shell semantics. Replace only
+        # the following installation with a marker; never install a test object.
+        command = "true \\\n" + dockerfile[start:end] + " && echo ACCEPTED"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "build").mkdir()
+            source = root / "fixture.s"
+            binary = root / "build/cuda-stream"
+            for case in ("avx512", "portable", "grep_failure", "objdump_failure"):
+                with self.subTest(case=case):
+                    if case == "objdump_failure":
+                        binary.unlink()
+                    else:
+                        instruction = (
+                            "vpxord %zmm0, %zmm0, %zmm0\n" if case == "avx512" else ""
+                        )
+                        # A match near the start must not terminate the producer
+                        # while it still has more than a pipe buffer to write.
+                        source.write_text(
+                            ".text\n.globl fixture\nfixture:\n"
+                            + instruction
+                            + ".rept 100000\n nop\n.endr\n ret\n"
+                        )
+                        subprocess.run(
+                            ["g++", "-c", str(source), "-o", str(binary)],
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                        )
+                    prefix = "grep() { return 2; }; " if case == "grep_failure" else ""
+                    result = subprocess.run(
+                        ["bash", "-o", "pipefail", "-c", prefix + command],
+                        cwd=root,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if case == "portable":
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertIn("ACCEPTED", result.stdout)
+                    else:
+                        self.assertNotEqual(result.returncode, 0, result.stdout)
+                        self.assertNotIn("ACCEPTED", result.stdout)
 
     def test_requirements_match_locked_hashes(self):
         lock = json.loads((ROOT / "image/runtime-lock.json").read_text())

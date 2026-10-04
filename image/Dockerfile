@@ -175,6 +175,9 @@ WORKDIR /build
 # markers and EVEX-only mnemonics, and fails the stage if any survive. (It does
 # not scan for the raw EVEX 0x62 prefix: literal data inside .text also contains
 # 0x62 bytes -- e.g. the ASCII "ble" in "available" -- which would false-fail.)
+# Materialize checked objdump output before grep: grep -q in a pipe can give
+# objdump SIGPIPE under pipefail and turn a positive match into a false negative.
+# Only grep status 1 means a clean scan; inspection errors must block installation.
 # BabelStream v5.0 names its target `$(MODEL)-stream` (the README documents
 # `./build/<model>-stream`), so the CUDA build produces `build/cuda-stream`; it is
 # installed under the launcher's fixed /usr/local/bin/babelstream path.
@@ -187,9 +190,13 @@ RUN curl --fail --location --retry 3 https://api.github.com/repos/UoB-HPC/BabelS
       -DCMAKE_BUILD_TYPE=Release \
       -DRELEASE_FLAGS="-O3;-march=x86-64-v2" \
  && cmake --build build -j"$(nproc)" \
- && if objdump -d build/cuda-stream | grep -Eq '%zmm|zmm[0-9]|%k[0-7]|\{z\}|1to[0-9]|vpxord|vpxorq|vmovdqu(8|16|32|64)|vpmovm2|vpmov(b2m|d2m|q2m|w2m)|vpternlog[qd]|vpermi2|vpermt2|vpcompress|vpexpand|vscatter|vrcp14|vrsqrt14|vreduce|vrange|vpmadd52|vdbpsadbw|vpconflict|vplzcnt'; then \
+ && objdump -d build/cuda-stream > build/cuda-stream.disassembly \
+ && if grep -Eq '%zmm|zmm[0-9]|%k[0-7]|\{z\}|1to[0-9]|vpxord|vpxorq|vmovdqu(8|16|32|64)|vpmovm2|vpmov(b2m|d2m|q2m|w2m)|vpternlog[qd]|vpermi2|vpermt2|vpcompress|vpexpand|vscatter|vrcp14|vrsqrt14|vreduce|vrange|vpmadd52|vdbpsadbw|vpconflict|vplzcnt' build/cuda-stream.disassembly; then \
         echo 'ERROR: babelstream host code contains AVX-512 (EVEX) instructions; it would SIGILL on non-AVX-512 hosts' >&2; \
         exit 1; \
+    else \
+        status=$?; \
+        if [ "$status" -ne 1 ]; then exit "$status"; fi; \
     fi \
  && install -m 0755 build/cuda-stream /usr/local/bin/babelstream
 
