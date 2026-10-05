@@ -42,6 +42,97 @@ class DevSecurityTests(unittest.TestCase):
             base_image="nvidia/cuda:12.8.1-devel-ubuntu24.04@sha256:4b9ed5fa8361736996499f64ecebf25d4ec37ff56e4d11323ccde10aa36e0c43",
         )
 
+    def python_report(self):
+        report = self.report()
+        report["Metadata"]["ImageID"] = (
+            "sha256:37f08c781f6fa456c20fe5faaef9d733ef2b7523c8925e4d83c9d1fb342739e7"
+        )
+        report["Results"] = [
+            {
+                "Class": "lang-pkgs",
+                "Type": "python-pkg",
+                "Vulnerabilities": [
+                    {
+                        "PkgName": package,
+                        "InstalledVersion": version,
+                        "VulnerabilityID": cve,
+                        "Severity": "HIGH",
+                    }
+                    for package, version, cve in (
+                        ("msgpack", "1.1.2", "GHSA-6v7p-g79w-8964"),
+                        ("setuptools", "70.3.0", "CVE-2025-47273"),
+                        ("urllib3", "2.7.0", "CVE-2026-97687"),
+                        ("urllib3", "2.7.0", "CVE-2026-97689"),
+                    )
+                ],
+            }
+        ]
+        return report
+
+    def test_exact_python_findings_accepted_without_erasing_risk(self):
+        report = self.python_report()
+        report["Results"] += self.report()["Results"]
+        result = self.check(report, today=date(2026, 10, 5))
+        self.assertTrue(result["gate_passed"])
+        self.assertFalse(result["zero_high_critical"])
+        self.assertEqual(len(result["accepted_python_findings"]), 4)
+        self.assertEqual(len(result["accepted_header_findings"]), 1)
+        self.assertEqual(result["raw_severity_counts"], {"HIGH": 4, "CRITICAL": 1})
+        self.assertEqual(result["blocking_findings"], [])
+
+    def test_python_exception_expires_at_start_of_october_15_utc(self):
+        for day, passed in ((14, True), (15, False), (16, False)):
+            with self.subTest(day=day):
+                self.assertEqual(
+                    self.check(self.python_report(), today=date(2026, 10, day))[
+                        "gate_passed"
+                    ],
+                    passed,
+                )
+
+    def test_python_exception_does_not_follow_other_image_or_base(self):
+        for image in (None, "sha256:" + "a" * 64):
+            report = self.python_report()
+            report["Metadata"]["ImageID"] = image
+            self.assertFalse(self.check(report)["gate_passed"])
+        self.assertFalse(
+            evaluate(self.python_report(), today=date(2026, 10, 5), base_image="other")[
+                "gate_passed"
+            ]
+        )
+
+    def test_python_exception_requires_exact_ecosystem_and_high_tuple(self):
+        for key, value in (
+            ("PkgName", "other"),
+            ("InstalledVersion", "1.1.3"),
+            ("VulnerabilityID", "CVE-NEW"),
+            ("Severity", "CRITICAL"),
+        ):
+            report = self.python_report()
+            report["Results"][0]["Vulnerabilities"][0][key] = value
+            result = self.check(report)
+            self.assertFalse(result["gate_passed"])
+            self.assertEqual(len(result["blocking_findings"]), 1)
+        for key, value in (("Class", "os-pkgs"), ("Type", "other")):
+            report = self.python_report()
+            report["Results"][0][key] = value
+            self.assertFalse(self.check(report)["gate_passed"])
+
+    def test_unrelated_high_remains_blocking_alongside_accepted_python(self):
+        report = self.python_report()
+        report["Results"][0]["Vulnerabilities"].append(
+            {
+                "PkgName": "numpy",
+                "InstalledVersion": "2.5.3",
+                "VulnerabilityID": "CVE-UNAPPROVED",
+                "Severity": "HIGH",
+            }
+        )
+        result = self.check(report)
+        self.assertFalse(result["gate_passed"])
+        self.assertEqual(len(result["accepted_python_findings"]), 4)
+        self.assertEqual(result["blocking_findings"][0]["cve"], "CVE-UNAPPROVED")
+
     def test_only_named_header_package_can_receive_exception(self):
         result = self.check(self.report())
         self.assertTrue(result["gate_passed"])

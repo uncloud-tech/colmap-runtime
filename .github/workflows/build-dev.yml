@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       runtime_layer:
-        description: Native rebuild or Python-only validation (no publication/cache export)
+        description: Native build; Python validation or restore exact existing Python image when publish=true
         type: choice
         options: [native, python]
         default: native
@@ -25,6 +25,79 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  restore_publish:
+    if: inputs.runtime_layer == 'python' && inputs.publish
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    runs-on: blacksmith-32vcpu-ubuntu-2404
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch exact existing image and cached evidence on CI only
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p reports image
+          fetch_artifact() {
+            python3 -c 'import os,json; print("header = " + json.dumps("Authorization: Bearer " + os.environ["GH_TOKEN"]))' | \
+              curl --config - --location --proto '=https' --proto-redir '=https' --fail --silent --show-error \
+              "https://api.github.com/repos/uncloud-tech/colmap-runtime/actions/artifacts/$1/zip" --output "$2"
+          }
+          fetch_artifact 11351894774 image.zip
+          python3 scripts/restore_dev_image.py archive image.zip | tee reports/archive-check.txt
+          unzip -q image.zip -d image
+          rm image.zip
+          echo 'e49a932d5eb3822b51b00754fc687cef3d9092cb001fe20dc2e8bb0d48a3d077  image/SHA256SUMS' | sha256sum -c -
+          (cd image && sha256sum -c SHA256SUMS) | tee reports/chunk-checks.txt
+          fetch_artifact 11353475687 evidence.zip
+          echo 'd7aa5ed3db11160b791327c55f3fed91171f0f51c86de63a986a840ebf95b601  evidence.zip' | sha256sum -c -
+          unzip -q evidence.zip -d cached
+          rm evidence.zip
+          (cd cached && sha256sum -c SHA256SUMS) > reports/cached-evidence-checks.txt
+          echo 'aee2cd95d6c0f6710e2b6ee43afd6de4e618b91cdf41d18581c087d21de40cbf  cached/vulnerabilities.json' | sha256sum -c -
+      - name: Restore exact config and reevaluate unchanged cached scan
+        run: |
+          set -euo pipefail
+          cat image/image.tar.gz.part-* | gzip -dc | docker load
+          expected='sha256:37f08c781f6fa456c20fe5faaef9d733ef2b7523c8925e4d83c9d1fb342739e7'
+          test "$(cat image/image-id.txt)" = "$expected"
+          test "$(docker image inspect --format '{{.Id}}' colmap-dev:pr8-python)" = "$expected"
+          printf '%s\n' "$expected" > reports/restored-image-id.txt
+          python3 scripts/check_dev_security.py cached/vulnerabilities.json cached/BUILD-MANIFEST.txt > reports/cached-scan-reevaluated.json
+          sha256sum scripts/check_dev_security.py cached/vulnerabilities.json > reports/policy-input-hashes.txt
+      - name: Publish unique exact restored image and verify anonymous identity
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          repository=ghcr.io/uncloud-tech/colmap-runtime-dev
+          tag="$repository:pr8-python-restored-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          config=$(mktemp -d)
+          trap 'rm -rf "$config"' EXIT
+          export DOCKER_CONFIG="$config"
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          unset REGISTRY_TOKEN
+          docker tag colmap-dev:pr8-python "$tag"
+          docker push "$tag"
+          reference=$(docker image inspect --format '{{index .RepoDigests 0}}' "$tag")
+          case "$reference" in "$repository"@sha256:*) ;; *) exit 1;; esac
+          printf '%s\n' "$reference" | tee reports/published-image.txt
+          printf '%s\n' "$tag" > reports/published-tag.txt
+          python3 scripts/restore_dev_image.py anonymous "$reference" | tee reports/public-pull.txt
+      - name: Retain concise restore publication receipt even after failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: restore-publish-receipt-${{ github.run_id }}
+          path: reports/
+          if-no-files-found: error
+          retention-days: 14
+
   build:
     if: inputs.runtime_layer == 'native'
     permissions:
@@ -148,7 +221,7 @@ jobs:
           retention-days: 14
 
   python:
-    if: inputs.runtime_layer == 'python'
+    if: inputs.runtime_layer == 'python' && !inputs.publish
     permissions:
       contents: read
     runs-on: blacksmith-32vcpu-ubuntu-2404

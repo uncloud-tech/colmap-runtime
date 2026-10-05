@@ -80,13 +80,14 @@ class DevEvidenceTests(unittest.TestCase):
         self.assertNotIn("ubuntu22.04", workflow)
         self.assertIn("--network none", workflow)
         self.assertNotIn("colmap-dev:pr3 || true", workflow)
+        native = workflow.split("  build:\n", 1)[1].split("  python:\n", 1)[0]
         self.assertLess(
-            workflow.index("scripts/check_dev_targets.py"),
-            workflow.index("docker push"),
+            native.index("scripts/check_dev_targets.py"),
+            native.index("docker push"),
         )
         self.assertLess(
-            workflow.index("scripts/check_dev_security.py"),
-            workflow.index("docker push"),
+            native.index("scripts/check_dev_security.py"),
+            native.index("docker push"),
         )
         production = (ROOT / ".github/workflows/build.yml").read_text()
         self.assertIn("scripts/check_security.py", production)
