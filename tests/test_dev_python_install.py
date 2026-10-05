@@ -55,6 +55,11 @@ class OfflineInstallerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.install.validate_installation_context(prefix, exe, version, digest)
 
+    def test_altered_requirements_rejected(self):
+        lock = load_lock(Path("dev/python/environment-lock.json"))
+        with self.assertRaises(ValueError):
+            self.install.validate_requirements("numpy==999\n", lock)
+
     def test_exact_distribution_closure_and_bootstrap(self):
         lock = load_lock(Path("dev/python/environment-lock.json"))
         expected = {

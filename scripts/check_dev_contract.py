@@ -6,15 +6,8 @@ import re
 import sys
 
 
-def verify(directory):
-    directory = Path(directory)
-    contract = json.loads((directory / "image-contract.json").read_text())
-    binary_record = (directory / "binary-sha256.txt").read_text()
-    match = re.fullmatch(r"([0-9a-f]{64})  /opt/colmap-pr8/bin/colmap\n", binary_record)
-    if not match:
-        raise ValueError("Invalid installed binary hash evidence")
-    binary_sha = match.group(1)
-    expected = {
+def expected_native_contract(binary_sha):
+    return {
         "schema_version": 1,
         "source_repo": "https://github.com/uncloud-tech/colmap",
         "source_commit": "340f78310590cefda7cd3bb61ff0775ae5e2b59f",
@@ -31,7 +24,17 @@ def verify(directory):
         "sweep_tile_values": [0, 8, 16, 32],
         "compact_prng_default": "0",
     }
-    if contract != expected:
+
+
+def verify_native(directory, contract):
+    directory = Path(directory)
+    binary_record = (directory / "binary-sha256.txt").read_text()
+    match = re.fullmatch(r"([0-9a-f]{64})  /opt/colmap-pr8/bin/colmap\n", binary_record)
+    if not match:
+        raise ValueError("Invalid installed binary hash evidence")
+    binary_sha = match.group(1)
+    expected = expected_native_contract(binary_sha)
+    if type(contract.get("schema_version")) is not int or contract != expected:
         raise ValueError("Baked image contract does not match PR8/binary evidence")
     manifest = (directory / "BUILD-MANIFEST.txt").read_text().splitlines()
     for key in (
@@ -61,6 +64,13 @@ def verify(directory):
     ):
         raise ValueError("Image defaults enable compact PRNG or select a stale binary")
     print(f"PASS: PR8 baked binary {binary_sha}; runtime sweep_tile; compact PRNG off")
+
+
+def verify(directory):
+    directory = Path(directory)
+    verify_native(
+        directory, json.loads((directory / "image-contract.json").read_text())
+    )
 
 
 if __name__ == "__main__":

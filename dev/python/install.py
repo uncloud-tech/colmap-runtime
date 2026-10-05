@@ -6,8 +6,17 @@ from pathlib import Path
 import platform
 import subprocess
 import sys
+from urllib.parse import urlsplit
 
-from dev.python.locked_env import PREFIX, PYTHON_SHA, canonical, load_lock, sha256
+from dev.python.locked_env import (
+    PREFIX,
+    PYTHON_SHA,
+    canonical,
+    load_lock,
+    requirements_text,
+    sha256,
+    verify_file,
+)
 
 
 def alias_targets(prefix):
@@ -53,6 +62,11 @@ def validate_installation_context(prefix, executable, version, executable_sha256
         raise ValueError("wrong shared prefix/interpreter identity")
 
 
+def validate_requirements(text, lock):
+    if text != requirements_text(lock):
+        raise ValueError("requirements differ from exact locked wheel pins")
+
+
 def distributions():
     records = list(importlib.metadata.distributions())
     result = {canonical(d.metadata["Name"]): d.version for d in records}
@@ -80,6 +94,9 @@ def main():
         sha256(sys.executable),
     )
     lock = load_lock(PREFIX / "environment-lock.json")
+    validate_requirements((args.artifacts / "requirements.txt").read_text(), lock)
+    for row in lock["artifacts"] + lock["dependency_artifacts"]:
+        verify_file(args.artifacts / urlsplit(row["uri"]).path.rsplit("/", 1)[-1], row)
     for command in installation_commands(
         PREFIX, args.artifacts, args.artifacts / "requirements.txt"
     ):
