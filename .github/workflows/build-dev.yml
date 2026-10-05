@@ -7,6 +7,10 @@ name: Build dev image (PR#8 memory stack)
 on:
   workflow_dispatch:
     inputs:
+      inspect_only:
+        description: One-time read-only inspection of the exact published parent; skips all build and publish steps
+        type: boolean
+        default: false
       publish:
         description: Publish disposable experimental image (approved header exception; no production data)
         type: boolean
@@ -21,6 +25,7 @@ concurrency:
 
 jobs:
   build:
+    if: ${{ !inputs.inspect_only }}
     permissions:
       contents: read
       packages: write
@@ -137,6 +142,53 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: runtime-evidence-dev-${{ github.run_id }}
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 14
+
+  inspect:
+    if: ${{ inputs.inspect_only }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      IMAGE: ghcr.io/uncloud-tech/colmap-runtime-dev@sha256:8993096b761a11d210afc5c49cbc8b8622d0b96d36fb539b348089c18d97ac0b
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pull only the exact public parent (linux/amd64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          printf '%s\n' "$IMAGE" > reports/parent-image.txt
+          printf '%s\n' "$GITHUB_SHA" > reports/inspection-commit.txt
+          docker pull --platform linux/amd64 "$IMAGE"
+          docker image inspect "$IMAGE" --format '{{.Id}} {{.Os}}/{{.Architecture}}' > reports/image-identity.txt
+          docker image inspect "$IMAGE" --format '{{json .RepoDigests}}' > reports/repository-digests.json
+      - name: Inspect without networking or writable root filesystem
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --platform linux/amd64 --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --mount "type=bind,source=$PWD/scripts/inspect_dev_python.sh,target=/inspection.sh,readonly" \
+            --entrypoint bash "$IMAGE" /inspection.sh 2>&1 | tee reports/python-inspection.log
+      - name: Hash non-secret observation even on failure
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d reports ]; then
+            (cd reports && find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: parent-python-inspection-${{ github.run_id }}
           path: reports/
           if-no-files-found: warn
           retention-days: 14
