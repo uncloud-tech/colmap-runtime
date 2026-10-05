@@ -1,5 +1,6 @@
 import importlib
 from pathlib import Path
+import re
 import unittest
 
 from dev.python.locked_env import PARENT, load_lock
@@ -26,6 +27,35 @@ class PythonBuildBoundaryTests(unittest.TestCase):
         self.assertNotIn("--push", argv)
         self.assertFalse(any("cache-to" in arg or "cache-from" in arg for arg in argv))
         self.assertIn(str(Path("dev/python/Dockerfile").resolve()), argv)
+
+    def test_image_uploaded_before_later_validation_can_time_out(self):
+        # Declarative deployment ordering is a recoverability contract.
+        workflow = (
+            Path(".github/workflows/build-dev.yml")
+            .read_text()
+            .split("  python:\n", 1)[1]
+        )
+        steps = re.findall(r"^      - name: (.+)$", workflow, re.MULTILINE)
+        upload = next(
+            i for i, name in enumerate(steps) if name.startswith("Upload recoverable")
+        )
+        cpu = next(
+            i
+            for i, name in enumerate(steps)
+            if name.startswith("Validate exact runtime")
+        )
+        security = next(
+            i
+            for i, name in enumerate(steps)
+            if name.startswith("Require unchanged fail-closed security")
+        )
+        self.assertLess(upload, cpu)
+        self.assertLess(upload, security)
+        restore = next(
+            i for i, name in enumerate(steps) if name.startswith("Restore saved image")
+        )
+        self.assertLess(upload, restore)
+        self.assertLess(restore, cpu)
 
     def test_wrong_context_rejected(self):
         with self.assertRaises(ValueError):

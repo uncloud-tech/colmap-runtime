@@ -106,6 +106,22 @@ class LockedPythonTests(unittest.TestCase):
         self.assertNotIn("[all]", text)
         self.assertNotIn("https:", text)
 
+    def test_acquisition_metadata_does_not_follow_symlinks(self):
+        from dev.python.acquire import checked_output_path
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protected = root / "protected"
+            protected.write_text("unchanged")
+            (root / "requirements.txt").symlink_to(protected)
+            with self.assertRaises(ValueError):
+                checked_output_path(root, "requirements.txt")
+            alias = root / "directory-link"
+            alias.symlink_to(root, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                checked_output_path(alias, "license-inventory.json")
+            self.assertEqual(protected.read_text(), "unchanged")
+
     def test_archive_interpreter_hash_verified_without_extraction(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "runtime.tar.gz"

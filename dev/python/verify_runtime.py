@@ -7,13 +7,21 @@ import json
 import os
 from pathlib import Path
 import platform
+import posixpath
 import re
 import subprocess
 import sys
 import sysconfig
 
 from dev.python.install import alias_targets, distributions, validate_distributions
-from dev.python.locked_env import COLMAP_SHA, PREFIX, PYTHON_SHA, load_lock, sha256
+from dev.python.locked_env import (
+    COLMAP_SHA,
+    PREFIX,
+    PYTHON_SHA,
+    load_lock,
+    safe_relative,
+    sha256,
+)
 
 NATIVE_PATH = "/opt/colmap-pr8/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 NATIVE_ENV = f"PATH={NATIVE_PATH}\nLD_LIBRARY_PATH=/opt/deps/lib:/opt/colmap-pr8/lib\nCOLMAP_PATCH_MATCH_COMPACT_PRNG=0\n"
@@ -55,7 +63,161 @@ def verify_installed_files(prefix, expected):
         raise ValueError("shared runtime file inventory changed")
 
 
+def validate_manifest_schema(evidence, lock):
+    required = {
+        "schema_version",
+        "interpreter",
+        "aliases",
+        "distributions",
+        "installed_files",
+        "artifacts",
+        "bootstrap",
+        "invocation",
+        "native_before",
+        "native_after",
+        "python_libraries",
+        "cpu_smoke",
+        "verification_scope",
+    }
+    if type(evidence) is not dict or set(evidence) != required:
+        raise ValueError("incomplete/unexpected runtime manifest fields")
+    interpreter = evidence["interpreter"]
+    if type(interpreter) is not dict or set(interpreter) != {
+        "path",
+        "realpath",
+        "prefix",
+        "base_prefix",
+        "version",
+        "release",
+        "sha256",
+        "soabi",
+    }:
+        raise ValueError("incomplete interpreter identity")
+    if (
+        interpreter["realpath"] != str(PREFIX / "bin/python3.14")
+        or interpreter["release"] != "3.14.7+20260924"
+        or interpreter["soabi"] != "cpython-314-x86_64-linux-gnu"
+    ):
+        raise ValueError("interpreter release/ABI differs")
+    if evidence["artifacts"] != lock["artifacts"] + lock["dependency_artifacts"]:
+        raise ValueError("runtime artifact provenance differs")
+    pip_sha = "71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e"
+    if evidence["bootstrap"] != {"pip": "26.2.1", "ensurepip_wheel_sha256": pip_sha}:
+        raise ValueError("bundled offline bootstrap identity differs")
+    inventory = evidence["installed_files"]
+    if type(inventory) is not dict or not inventory:
+        raise ValueError("complete installed file inventory required")
+    for name, record in inventory.items():
+        safe_relative(name)
+        if name == "runtime-manifest.json" or type(record) is not dict:
+            raise ValueError("invalid/self-referential installed inventory")
+        if set(record) == {"link"}:
+            if type(record["link"]) is not str or not record["link"]:
+                raise ValueError("invalid installed link record")
+            target = Path(
+                posixpath.normpath(str((PREFIX / name).parent / record["link"]))
+            )
+            if not target.is_relative_to(PREFIX):
+                raise ValueError("escaping installed inventory link")
+        elif (
+            set(record) != {"sha256", "size_bytes"}
+            or type(record["size_bytes"]) is not int
+            or record["size_bytes"] < 0
+            or type(record["sha256"]) is not str
+            or not re.fullmatch("[0-9a-f]{64}", record["sha256"])
+        ):
+            raise ValueError("invalid installed hash/size record")
+    if (
+        inventory.get("bin/python3.14", {}).get("sha256") != PYTHON_SHA
+        or inventory.get(
+            "lib/python3.14/ensurepip/_bundled/pip-26.2.1-py3-none-any.whl", {}
+        ).get("sha256")
+        != pip_sha
+    ):
+        raise ValueError("interpreter/bootstrap missing from installed inventory")
+    for key in ("native_before", "native_after"):
+        native = evidence[key]
+        if (
+            type(native) is not dict
+            or set(native) != set(SNAPSHOT_FILES)
+            or any(type(v) is not str or not v for v in native.values())
+        ):
+            raise ValueError("incomplete native identity snapshot")
+    invocation = evidence["invocation"]
+    if (
+        type(invocation) is not dict
+        or set(invocation)
+        != {"executable", "argv", "native_child_resolution", "environment"}
+        or invocation["executable"] != str(PREFIX / "bin/python3.14")
+        or type(invocation["argv"]) is not list
+        or not invocation["argv"]
+        or any(type(arg) is not str for arg in invocation["argv"])
+        or invocation["environment"]
+        != dict(line.split("=", 1) for line in NATIVE_ENV.splitlines())
+        or invocation["native_child_resolution"]
+        != evidence["native_after"]["native-library-resolution.txt"]
+    ):
+        raise ValueError("runtime/native child invocation identity differs")
+    smoke = evidence["cpu_smoke"]
+    if type(smoke) is not dict or set(smoke) != {
+        "numeric",
+        "rendering",
+        "pycolmap",
+        "imports",
+    }:
+        raise ValueError("incomplete CPU import/preparation evidence")
+    aliases = {
+        "fonttools": "fontTools",
+        "pillow": "PIL",
+        "pycolmap-cuda12": "pycolmap",
+        "python-dateutil": "dateutil",
+    }
+    expected_imports = {
+        aliases.get(row["name"], row["name"]): row["version"]
+        for row in lock["dependency_artifacts"]
+        if not row["name"].startswith("nvidia-") and row["name"] != "cuda-toolkit"
+    }
+    expected_imports |= {
+        "nvidia.cuda_runtime": "namespace",
+        "nvidia.curand": "namespace",
+    }
+    if smoke["imports"] != expected_imports:
+        raise ValueError("CPU imported module versions differ")
+    scope = evidence["verification_scope"]
+    if (
+        type(scope) is not dict
+        or set(scope)
+        != {
+            "gpu_validated",
+            "mps_validated",
+            "reference_map_gate_passed",
+            "root_read_only",
+            "network_policy",
+            "scratch",
+        }
+        or type(scope["root_read_only"]) is not bool
+        or scope["network_policy"] != "container/build network disabled by caller"
+        or type(scope["scratch"]) is not str
+        or not Path(scope["scratch"]).is_absolute()
+    ):
+        raise ValueError("incomplete/invalid verification scope")
+    libraries = evidence["python_libraries"]
+    if type(libraries) is not list or any(
+        type(r) is not dict or set(r) != {"path", "sha256"} for r in libraries
+    ):
+        raise ValueError("invalid Python library evidence")
+    for record in libraries:
+        path = Path(record["path"])
+        if (
+            not path.is_relative_to(PREFIX)
+            or inventory.get(str(path.relative_to(PREFIX)), {}).get("sha256")
+            != record["sha256"]
+        ):
+            raise ValueError("loaded library not bound to installed file inventory")
+
+
 def validate_runtime(evidence, lock):
+    validate_manifest_schema(evidence, lock)
     interpreter = evidence["interpreter"]
     if (
         type(evidence.get("schema_version")) is not int
@@ -194,6 +356,7 @@ def collect_runtime(prefix, lock, scratch, native_before, native_after):
         "schema_version": 1,
         "interpreter": {
             "path": str(Path(sys.executable).resolve()),
+            "realpath": str(Path(sys.executable).resolve()),
             "prefix": sys.prefix,
             "base_prefix": sys.base_prefix,
             "version": platform.python_version(),
@@ -236,6 +399,7 @@ def collect_runtime(prefix, lock, scratch, native_before, native_after):
             "scratch": str(scratch),
         },
     }
+    evidence["installed_files"] = file_inventory(prefix)
     validate_runtime(evidence, lock)
     return evidence
 

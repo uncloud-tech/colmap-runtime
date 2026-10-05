@@ -11,8 +11,10 @@ from dev.python.locked_env import (
     PARENT_DIGEST,
     PREFIX,
     PYTHON_SHA,
+    load_lock,
     sha256,
 )
+from dev.python.verify_runtime import validate_runtime
 from scripts.check_dev_contract import expected_native_contract, verify_native
 
 
@@ -68,6 +70,10 @@ def verify_python(directory):
     directory = Path(directory)
     contract = json.loads((directory / "image-contract.json").read_text())
     validate_contract(contract, sha256(directory / "runtime-manifest.json"))
+    validate_runtime(
+        json.loads((directory / "runtime-manifest.json").read_text()),
+        load_lock(directory / "environment-lock.json"),
+    )
     verify_native(directory, native_projection(contract))
     print("PASS: schema2 shared Python, exact lock and unchanged native projection")
 

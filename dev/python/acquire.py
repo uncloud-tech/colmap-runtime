@@ -23,6 +23,13 @@ class PublicRedirects(HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def checked_output_path(directory, name):
+    path = (directory / name).absolute()
+    if any(part.is_symlink() for part in (path, *path.parents)):
+        raise ValueError("symlink in acquisition destination")
+    return path
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -30,6 +37,8 @@ def main():
     parser.add_argument("--interpreter-cache", type=Path)
     args = parser.parse_args()
     lock = load_lock(Path("dev/python/environment-lock.json"))
+    checked_output_path(args.output, "requirements.txt")
+    checked_output_path(args.output, "license-inventory.json")
     args.output.mkdir(parents=True, exist_ok=True)
     if args.output.is_symlink():
         raise ValueError("staging directory is a symlink")
@@ -37,7 +46,7 @@ def main():
     licenses = []
     for row in lock["artifacts"] + lock["dependency_artifacts"]:
         name = urlsplit(row["uri"]).path.rsplit("/", 1)[-1]
-        path = args.output / name
+        path = checked_output_path(args.output, name)
         cache = (
             args.wheelhouse_cache / name
             if args.wheelhouse_cache and name.endswith(".whl")
@@ -51,7 +60,7 @@ def main():
             verify_file(cache, row)
             shutil.copyfile(cache, path)
         else:
-            temporary = path.with_suffix(path.suffix + ".partial")
+            temporary = checked_output_path(args.output, name + ".partial")
             with (
                 opener.open(public_url(row["uri"]), timeout=120) as source,
                 temporary.open("xb") as target,
@@ -71,8 +80,10 @@ def main():
         else:
             validate_archive(path)
         print("verified", name, row["sha256"])
-    (args.output / "requirements.txt").write_text(requirements_text(lock))
-    (args.output / "license-inventory.json").write_text(
+    checked_output_path(args.output, "requirements.txt").write_text(
+        requirements_text(lock)
+    )
+    checked_output_path(args.output, "license-inventory.json").write_text(
         json.dumps(licenses, indent=2) + "\n"
     )
 

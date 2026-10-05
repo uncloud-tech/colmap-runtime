@@ -17,7 +17,7 @@ class RuntimeEvidenceTests(unittest.TestCase):
         self.lock = load_lock(Path("dev/python/environment-lock.json"))
 
     def evidence(self):
-        native = {
+        native = dict.fromkeys(self.runtime.SNAPSHOT_FILES, "unchanged\n") | {
             "binary-sha256.txt": COLMAP_SHA + "  /opt/colmap-pr8/bin/colmap\n",
             "native-env.txt": self.runtime.NATIVE_ENV,
             "native-library-files.sha256": "native library hash\n",
@@ -42,6 +42,9 @@ class RuntimeEvidenceTests(unittest.TestCase):
             "schema_version": 1,
             "interpreter": {
                 "path": str(PREFIX / "bin/python3.14"),
+                "realpath": str(PREFIX / "bin/python3.14"),
+                "release": "3.14.7+20260924",
+                "soabi": "cpython-314-x86_64-linux-gnu",
                 "prefix": str(PREFIX),
                 "base_prefix": str(PREFIX),
                 "version": "3.14.7",
@@ -58,13 +61,80 @@ class RuntimeEvidenceTests(unittest.TestCase):
             "native_before": native,
             "native_after": copy.deepcopy(native),
             "python_libraries": libraries,
-            "cpu_smoke": {"numeric": True, "rendering": True, "pycolmap": True},
+            "installed_files": {
+                "bin/python3.14": {"sha256": PYTHON_SHA, "size_bytes": 32418544},
+                "lib/python3.14/ensurepip/_bundled/pip-26.2.1-py3-none-any.whl": {
+                    "sha256": "71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e",
+                    "size_bytes": 1,
+                },
+            }
+            | {
+                str(Path(r["path"]).relative_to(PREFIX)): {
+                    "sha256": r["sha256"],
+                    "size_bytes": 1,
+                }
+                for r in libraries
+            },
+            "artifacts": self.lock["artifacts"] + self.lock["dependency_artifacts"],
+            "bootstrap": {
+                "pip": "26.2.1",
+                "ensurepip_wheel_sha256": "71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e",
+            },
+            "invocation": {
+                "executable": str(PREFIX / "bin/python3.14"),
+                "argv": ["verify_runtime.py"],
+                "native_child_resolution": native["native-library-resolution.txt"],
+                "environment": dict(
+                    line.split("=", 1) for line in self.runtime.NATIVE_ENV.splitlines()
+                ),
+            },
+            "cpu_smoke": {
+                "numeric": True,
+                "rendering": True,
+                "pycolmap": True,
+                "imports": {
+                    "contourpy": "1.4.0",
+                    "cycler": "0.12.1",
+                    "fontTools": "4.65.0",
+                    "kiwisolver": "1.5.1",
+                    "matplotlib": "3.11.2",
+                    "numpy": "2.5.3",
+                    "packaging": "26.3",
+                    "PIL": "12.3.0",
+                    "pycolmap": "4.2.0",
+                    "pyparsing": "3.3.2",
+                    "dateutil": "2.9.0.post0",
+                    "scipy": "1.18.1",
+                    "six": "1.17.0",
+                    "nvidia.cuda_runtime": "namespace",
+                    "nvidia.curand": "namespace",
+                },
+            },
             "verification_scope": {
                 "gpu_validated": False,
                 "mps_validated": False,
                 "reference_map_gate_passed": False,
+                "root_read_only": False,
+                "network_policy": "container/build network disabled by caller",
+                "scratch": "/tmp/smoke",
             },
         }
+
+    def test_complete_manifest_schema_required(self):
+        for key in ("artifacts", "bootstrap", "invocation", "installed_files"):
+            evidence = self.evidence()
+            del evidence[key]
+            with self.assertRaises(ValueError):
+                self.runtime.validate_runtime(evidence, self.lock)
+        for mutate in (
+            lambda e: e.update(unexpected=True),
+            lambda e: e["interpreter"].update(soabi="wrong-abi"),
+            lambda e: e["bootstrap"].update(ensurepip_wheel_sha256="b" * 64),
+        ):
+            evidence = self.evidence()
+            mutate(evidence)
+            with self.assertRaises(ValueError):
+                self.runtime.validate_runtime(evidence, self.lock)
 
     def test_valid_identity(self):
         self.runtime.validate_runtime(self.evidence(), self.lock)
