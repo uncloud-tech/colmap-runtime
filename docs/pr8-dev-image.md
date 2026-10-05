@@ -44,6 +44,39 @@ only the launcher does not necessarily reap descendants; use governed stage
 cleanup or pause/stage-only jobs instead of manual takeover. This image does not
 itself repair launcher process/workspace lifecycle bugs.
 
+## Shared pinned Python layer (validation-only)
+
+`dev/python/Dockerfile` layers on the exact native parent
+`ghcr.io/uncloud-tech/colmap-runtime-dev@sha256:8993096b761a11d210afc5c49cbc8b8622d0b96d36fb539b348089c18d97ac0b`.
+It does not compile native COLMAP or change its configuration/libraries.
+The one shared installation is `/opt/colmap-python`, CPython `3.14.7+20260924`
+with the exact 16 historical wheels plus bundled pip 26.2.1. `python` and
+`python3` in `/usr/local/bin` resolve to that interpreter; `/usr/bin` is untouched.
+Jobs may reuse it or create scratch-owned venvs without modifying the baseline.
+Benchmarks explicitly select `/opt/colmap-python/bin/python3.14 -E -s -B JOB/scripts/run.py`.
+No global PATH/LD_LIBRARY_PATH change or Python CUDA library injection is made.
+
+The original lock remains byte-identical under the prefix and refers to the
+**native parent**, not a derived registry digest. Schema 2 adds a Python identity
+and hashes the complete runtime/file manifest; the strict native projection is
+still schema 1. Read-only/no-network container verification checks offline package
+closure, synthetic CPU preparation, native before/after source/tool/library hashes,
+loaded wheel-local cudart/curand paths and a disposable offline venv.
+
+Dispatch the registered build-dev workflow with `runtime_layer=python`,
+`publish=false` only under explicit CI/build authority. The native job is skipped;
+the Python job has read-only repository permissions and no registry/cache export.
+It saves the **actual image**, gzip-split in 1 GiB parts with SHA256SUMS, as
+`python-layer-image-<run-id>` (1-day retention), plus checksummed verification
+`python-layer-evidence-<run-id>` (14 days). Restore by checking SHA256SUMS,
+concatenating parts, decompressing and `docker load`; compare the resulting image
+ID with `image-id.txt`. Failed post-build gates still retain the candidate but do
+not make it ready. No image artifact exists if the build itself failed.
+
+This does not update the frozen coordinator's interpreter/library selection;
+photogram owns that separate handoff. GPU/MPS/632-map correctness remains pending.
+No new registry digest is asserted by validation-only image retention.
+
 ## Evidence limits
 
 Upstream measurements: measured byte-exact at 1 worker/GPU; 4 workers/GPU

@@ -99,11 +99,15 @@ def test_exact_lock_identity_and_totals(self):
     lock = load_lock(Path("dev/python/environment-lock.json"))
     self.assertEqual(len(lock["artifacts"]), 1)
     self.assertEqual(len(lock["dependency_artifacts"]), 16)
-    self.assertEqual(sum(a["size_bytes"] for a in
-                         lock["artifacts"] + lock["dependency_artifacts"]), 258592337)
+    self.assertEqual(
+        sum(a["size_bytes"] for a in lock["artifacts"] + lock["dependency_artifacts"]),
+        258592337,
+    )
     self.assertEqual(lock["interpreter"]["version"], "3.14.7")
-    self.assertEqual(lock["image_digest"],
-                     "sha256:8993096b761a11d210afc5c49cbc8b8622d0b96d36fb539b348089c18d97ac0b")
+    self.assertEqual(
+        lock["image_digest"],
+        "sha256:8993096b761a11d210afc5c49cbc8b8622d0b96d36fb539b348089c18d97ac0b",
+    )
 ```
 
 - [ ] **Observe RED:** `python3 -m unittest discover -s tests -p test_dev_python_lock.py -v`; feature tests fail because the validator is missing, not because fixture preparation contacts the network.
@@ -126,10 +130,13 @@ def test_exact_lock_identity_and_totals(self):
 
 ```python
 def test_alias_plan_resolves_both_names_to_one_executable(self):
-    self.assertEqual(alias_targets(Path("/opt/colmap-python")), {
-        Path("/usr/local/bin/python"): Path("/opt/colmap-python/bin/python3.14"),
-        Path("/usr/local/bin/python3"): Path("/opt/colmap-python/bin/python3.14"),
-    })
+    self.assertEqual(
+        alias_targets(Path("/opt/colmap-python")),
+        {
+            Path("/usr/local/bin/python"): Path("/opt/colmap-python/bin/python3.14"),
+            Path("/usr/local/bin/python3"): Path("/opt/colmap-python/bin/python3.14"),
+        },
+    )
 ```
 
 - [ ] **Observe RED:** `python3 -m unittest discover -s tests -p test_dev_python_install.py -v`.
@@ -191,9 +198,12 @@ def test_boolean_runtime_schema_rejected(self):
 ```python
 def test_validation_failures_never_construct_publication_commands(self):
     with self.assertRaises(ValueError):
-        publication_commands("colmap-dev:pr8-python",
-                             "ghcr.io/uncloud-tech/colmap-runtime-dev",
-                             "sha256:" + "a" * 64, False)
+        publication_commands(
+            "colmap-dev:pr8-python",
+            "ghcr.io/uncloud-tech/colmap-runtime-dev",
+            "sha256:" + "a" * 64,
+            False,
+        )
 ```
 
 - [ ] **Observe RED:** `python3 -m unittest discover -s tests -p test_dev_python_commands.py -v`.

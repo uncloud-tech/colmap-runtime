@@ -7,6 +7,11 @@ name: Build dev image (PR#8 memory stack)
 on:
   workflow_dispatch:
     inputs:
+      runtime_layer:
+        description: Native rebuild or Python-only validation (no publication/cache export)
+        type: choice
+        options: [native, python]
+        default: native
       publish:
         description: Publish disposable experimental image (approved header exception; no production data)
         type: boolean
@@ -21,6 +26,7 @@ concurrency:
 
 jobs:
   build:
+    if: inputs.runtime_layer == 'native'
     permissions:
       contents: read
       packages: write
@@ -139,4 +145,124 @@ jobs:
           name: runtime-evidence-dev-${{ github.run_id }}
           path: reports/
           if-no-files-found: warn
+          retention-days: 14
+
+  python:
+    if: inputs.runtime_layer == 'python'
+    permissions:
+      contents: read
+    runs-on: blacksmith-32vcpu-ubuntu-2404
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require validation-only inputs
+        env:
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          test "$PUBLISH" = false
+          mkdir -p reports image-artifact
+          df -h / /var/lib/docker
+          printf '%s\n' "$GITHUB_SHA" > reports/workflow-commit.txt
+      - name: Verify exact public artifacts and stage allowlisted context
+        run: |
+          set -euo pipefail
+          python3 -m dev.python.acquire --output dev/python/.staged/artifacts 2>&1 | tee reports/acquisition.log
+          python3 -m scripts.dev_python_commands stage
+          cp dev/python/.staged/artifacts/license-inventory.json reports/
+          sha256sum dev/python/Dockerfile dev/python/*.py dev/python/environment-lock.json scripts/check_dev*py scripts/collect_dev_python_native.sh > reports/recipe-verifier-sha256.txt
+      - name: Build only the offline Python layer without registry/cache exports
+        id: build_python
+        run: |
+          set -euo pipefail
+          python3 -m scripts.dev_python_commands build 2>&1 | tee reports/build.log
+          parent=ghcr.io/uncloud-tech/colmap-runtime-dev@sha256:8993096b761a11d210afc5c49cbc8b8622d0b96d36fb539b348089c18d97ac0b
+          docker image inspect "$parent" > reports/parent-config.json
+          docker image inspect colmap-dev:pr8-python > reports/image-config.json
+          docker image inspect --format '{{.Id}}' colmap-dev:pr8-python > reports/image-id.txt
+          python3 -m scripts.dev_python_commands config
+      - name: Validate exact runtime CPU preparation and native libraries read-only offline
+        id: cpu
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,exec,size=2g \
+            --entrypoint bash --mount "type=bind,source=$PWD/reports,target=/evidence" \
+            colmap-dev:pr8-python -euo pipefail -c '
+              bash /opt/colmap-python/libexec/collect-native.sh /evidence/native-after
+              cd /opt/colmap-python/libexec
+              export MPLCONFIGDIR=/tmp/smoke/mpl XDG_CACHE_HOME=/tmp/smoke/cache
+              /opt/colmap-python/bin/python3.14 -E -s -B -m dev.python.verify_runtime --after /evidence/native-after --scratch /tmp/smoke --output /evidence/runtime-observed.json
+              cp /opt/colmap-python/runtime-manifest.json /evidence/native-after/runtime-manifest.json
+              /opt/colmap-python/bin/python3.14 -E -s -B -m scripts.check_dev_python_contract /evidence/native-after
+              for alias in /usr/local/bin/python /usr/local/bin/python3; do
+                "$alias" -E -s -B -c "import sys, pathlib; assert sys.prefix == \"/opt/colmap-python\"; assert pathlib.Path(sys.executable).resolve() == pathlib.Path(\"/opt/colmap-python/bin/python3.14\")"
+              done
+              /opt/colmap-python/bin/python3.14 -E -s -B -m venv /tmp/job-venv
+              /tmp/job-venv/bin/python -E -s -B -c "import sys; assert sys.base_prefix == \"/opt/colmap-python\"; assert sys.prefix == \"/tmp/job-venv\""
+              /opt/colmap-python/bin/python3.14 -E -s -B -c "from pathlib import Path; import json; from dev.python.verify_runtime import verify_installed_files; p=Path(\"/opt/colmap-python\"); verify_installed_files(p,json.loads((p/\"runtime-manifest.json\").read_text())[\"installed_files\"])"
+            ' 2>&1 | tee reports/verification.log
+          cp reports/native-after/BUILD-MANIFEST.txt reports/
+      - name: Generate fresh Python-layer SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.74.0
+          scan-type: image
+          image-ref: colmap-dev:pr8-python
+          format: cyclonedx
+          output: reports/sbom.cdx.json
+          timeout: 10m
+          cache: false
+      - name: Require unchanged fail-closed security gate
+        id: security
+        run: |
+          set -euo pipefail
+          trivy image --scanners vuln --format json --timeout 10m --output reports/vulnerabilities.json colmap-dev:pr8-python
+          python3 scripts/check_dev_security.py reports/vulnerabilities.json reports/BUILD-MANIFEST.txt > reports/security-gate.json 2> reports/security-gate-errors.txt
+      - name: Retain actual Docker image even if a later validation gate failed
+        id: export_image
+        if: always()
+        env:
+          CPU_RESULT: ${{ steps.cpu.outcome }}
+          SECURITY_RESULT: ${{ steps.security.outcome }}
+        run: |
+          set -euo pipefail
+          if docker image inspect colmap-dev:pr8-python > /dev/null 2>&1; then
+            mkdir -p image-artifact
+            docker image inspect --format '{{.Id}}' colmap-dev:pr8-python > image-artifact/image-id.txt
+            docker save colmap-dev:pr8-python | gzip -1 | split -b 1024M -d - image-artifact/image.tar.gz.part-
+            printf 'Restore: sha256sum -c SHA256SUMS && cat image.tar.gz.part-* | gzip -dc | docker load\nCPU gate: %s\nSecurity gate: %s\nNo registry publication. Native job must be skipped. Retention: 1 day.\n' "$CPU_RESULT" "$SECURITY_RESULT" > image-artifact/README.txt
+            (cd image-artifact && sha256sum image.tar.gz.part-* image-id.txt README.txt > SHA256SUMS)
+            test "$(docker image inspect --format '{{.Id}}' colmap-dev:pr8-python)" = "$(cat image-artifact/image-id.txt)"
+            cp image-artifact/SHA256SUMS reports/docker-image-SHA256SUMS
+            cp image-artifact/image-id.txt reports/image-id.txt
+            du -sh image-artifact | tee reports/image-artifact-size.txt
+            echo 'complete=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'BLOCKER: build produced no final image; no recoverable image can be exported.' | tee reports/image-retention-blocker.txt
+          fi
+      - name: Upload recoverable checksummed image (never registry/cache export)
+        if: always() && steps.export_image.outputs.complete == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-layer-image-${{ github.run_id }}
+          path: image-artifact/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+      - name: Hash evidence even after failure
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -d reports ]; then
+            (cd reports && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 -r sha256sum > SHA256SUMS)
+          fi
+      - name: Upload verification evidence even after failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-layer-evidence-${{ github.run_id }}
+          path: reports/
+          if-no-files-found: error
           retention-days: 14

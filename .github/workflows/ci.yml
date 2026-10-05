@@ -82,7 +82,7 @@ jobs:
           echo "c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507  /tmp/hadolint" | sha256sum -c -
           chmod +x /tmp/hadolint
       - name: hadolint
-        run: /tmp/hadolint --config .hadolint.yaml image/Dockerfile dev/Dockerfile
+        run: /tmp/hadolint --config .hadolint.yaml image/Dockerfile dev/Dockerfile dev/python/Dockerfile
 
   security-review:
     name: security-review (report only)
