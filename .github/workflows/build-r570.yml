@@ -51,7 +51,6 @@ jobs:
           docker image inspect --format '{{.Id}}' colmap-dev:r570 > reports/image-id.txt
           docker run --rm --entrypoint /bin/bash colmap-dev:r570 -c 'cat /opt/photogram-dev/manifest.json' > reports/image-manifest.json
           sha256sum reports/image-manifest.json reports/image-id.txt > reports/identity-sha256.txt
-          python3 scripts/check_dev_r570_manifest.py --help >/dev/null
           python3 scripts/check_dev_r570_manifest.py reports/image-manifest.json > reports/manifest-validation.log
       - name: CPU in-container doctor and prepare
         run: |
