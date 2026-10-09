@@ -19,6 +19,14 @@ GENERATOR = _load("generate_manifest", ROOT / "dev/generate_manifest.py")
 
 HELP_TEXT = "COLMAP 3.12\n  --PatchMatchStereo.sweep_tile arg (=32)\n"
 
+
+def _mvs_objects():
+    return {
+        stem: {"elf": ["sm_86", "sm_89"], "ptx": ["compute_70", "compute_90"]}
+        for stem in ("patch_match_cuda", "gpu_mat_prng", "gpu_mat_ref_image")
+    }
+
+
 FACTS = {
     "source_archive_sha256": "a" * 64,
     "controls": {
@@ -26,8 +34,8 @@ FACTS = {
         "seed": {"sha256": "d" * 64, "help_sha256": VALIDATOR.sha256_hex(HELP_TEXT), "version_cc_sha256": "e" * 64},
     },
     "mvs": {
-        "stock": {"observed_elf": ["sm_86", "sm_89"], "observed_ptx": ["compute_70", "compute_90"], "native_sm120": False},
-        "seed": {"observed_elf": ["sm_86", "sm_89"], "observed_ptx": ["compute_70", "compute_90"], "native_sm120": False},
+        "stock": {"observed_elf": ["sm_86", "sm_89"], "observed_ptx": ["compute_70", "compute_90"], "native_sm120": False, "objects": _mvs_objects()},
+        "seed": {"observed_elf": ["sm_86", "sm_89"], "observed_ptx": ["compute_70", "compute_90"], "native_sm120": False, "objects": _mvs_objects()},
     },
     "build": {"install_library_targets": ["colmap_util", "colmap_mvs"]},
     "toolchain": {
@@ -76,6 +84,7 @@ class ManifestTests(unittest.TestCase):
             lambda m: m["mvs_evidence"].__setitem__("sm120_source_toggle_patch", True),
             lambda m: m["mvs_evidence"]["per_control"]["stock"].__setitem__("native_sm120", True),
             lambda m: m["mvs_evidence"]["per_control"]["stock"].__setitem__("observed_elf", ["sm_86"]),
+            lambda m: m["mvs_evidence"]["per_control"]["stock"]["objects"]["patch_match_cuda"].__setitem__("elf", ["sm_86", "sm_120"]),
             lambda m: m["gpu"].__setitem__("gpu_execution_validated", True),
             lambda m: m["gpu"].__setitem__("documented_min_driver", "570.195.03"),
             lambda m: m["toolchain"].__setitem__("boost", "1.83.0"),

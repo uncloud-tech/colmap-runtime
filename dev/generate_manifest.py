@@ -119,6 +119,17 @@ def collect_facts(root=EVIDENCE_ROOT, run=subprocess.run):
             "observed_elf": elf,
             "observed_ptx": ptx,
             "native_sm120": "sm_120" in elf,
+            "objects": {
+                object_name: {
+                    "elf": arches_from_listing(
+                        (arm / "mvs" / f"{object_name}.elf.txt").read_text(), "elf"
+                    ),
+                    "ptx": arches_from_listing(
+                        (arm / "mvs" / f"{object_name}.ptx.txt").read_text(), "ptx"
+                    ),
+                }
+                for object_name in MVS_OBJECT_NAMES
+            },
         }
     facts["build"] = {
         "install_library_targets": [
@@ -224,6 +235,7 @@ def build_manifest(facts):
                     "observed_elf": facts["mvs"][name]["observed_elf"],
                     "observed_ptx": facts["mvs"][name]["observed_ptx"],
                     "native_sm120": facts["mvs"][name]["native_sm120"],
+                    "objects": facts["mvs"][name]["objects"],
                     "evidence_dir": f"/opt/photogram-dev/evidence/{name}/mvs",
                 }
                 for name in VALIDATOR.CONTROL_PATHS

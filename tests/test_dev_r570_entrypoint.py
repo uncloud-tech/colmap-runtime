@@ -32,8 +32,12 @@ def fixture_manifest():
             "seed": {"sha256": SEED_SHA, "help_sha256": VALIDATOR.sha256_hex(HELP_TEXT), "version_cc_sha256": "e" * 64},
         },
         "mvs": {
-            "stock": {"observed_elf": ["sm_86", "sm_89"], "observed_ptx": ["compute_70", "compute_90"], "native_sm120": False},
-            "seed": {"observed_elf": ["sm_86", "sm_89"], "observed_ptx": ["compute_70", "compute_90"], "native_sm120": False},
+            "stock": {"observed_elf": ["sm_86", "sm_89"], "observed_ptx": ["compute_70", "compute_90"], "native_sm120": False,
+                      "objects": {stem: {"elf": ["sm_86", "sm_89"], "ptx": ["compute_70", "compute_90"]}
+                                  for stem in ("patch_match_cuda", "gpu_mat_prng", "gpu_mat_ref_image")}},
+            "seed": {"observed_elf": ["sm_86", "sm_89"], "observed_ptx": ["compute_70", "compute_90"], "native_sm120": False,
+                     "objects": {stem: {"elf": ["sm_86", "sm_89"], "ptx": ["compute_70", "compute_90"]}
+                                 for stem in ("patch_match_cuda", "gpu_mat_prng", "gpu_mat_ref_image")}},
         },
         "build": {"install_library_targets": ["colmap_util"]},
         "toolchain": {"nvcc": "12.8", "cuda": "12.8", "gcc": "13.3.0", "cmake": "3.28.3", "ninja": "1.11.1", "python": "3.14.7"},

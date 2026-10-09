@@ -57,6 +57,7 @@ DEP_PINS = {
 }
 CUDA_ARCHITECTURES = "86-real;89-real;120-real;70-virtual"
 MVS_OBJECTS = ["patch_match_cuda.cu.o", "gpu_mat_prng.cu.o", "gpu_mat_ref_image.cu.o"]
+MVS_OBJECT_STEMS = [name[:-5] for name in MVS_OBJECTS]
 MVS_TEST_TARGETS = [
     "colmap_mvs_depth_map_test",
     "colmap_mvs_normal_map_test",
@@ -228,6 +229,16 @@ def validate_manifest(manifest):
             raise ContractError(f"{name} observed PTX drift: {per['observed_ptx']}")
         if per["native_sm120"] is not False:
             raise ContractError(f"{name} must not emit native sm_120 MVS SASS")
+        objects = per["objects"]
+        if set(objects) != set(MVS_OBJECT_STEMS):
+            raise ContractError(f"{name} per-object MVS evidence set drift")
+        for stem, record in objects.items():
+            if not set(record["elf"]) <= {"sm_86", "sm_89"}:
+                raise ContractError(f"{name}/{stem} emits unexpected MVS SASS: {record['elf']}")
+            if "sm_120" in record["elf"]:
+                raise ContractError(f"{name}/{stem} must not emit native sm_120 MVS SASS")
+            if not set(record["ptx"]) <= {"compute_70", "compute_90"}:
+                raise ContractError(f"{name}/{stem} emits unexpected MVS PTX: {record['ptx']}")
 
     gpu = manifest["gpu"]
     if gpu["documented_min_driver"] != DOCUMENTED_MIN_DRIVER:
