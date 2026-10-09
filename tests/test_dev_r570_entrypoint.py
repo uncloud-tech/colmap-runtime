@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -94,6 +95,40 @@ def healthy_ldd():
         f"\tlinux-vdso.so.1 (0x0000)\n\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x1)\n"
         f"\tlibstdc++.so.6 => /lib/x86_64-linux-gnu/libstdc++.so.6 (0x2)\n"
     )
+
+
+class RealProbeInspector(TOOL.Inspector):
+    """Real filesystem probe on a temp workspace; scripted control/loader checks.
+
+    It inherits the production ``make_probe`` (real mkdir/write/rmtree) and only
+    substitutes the read-only control inspection so ``prepare`` can run against
+    a temp directory without the baked image controls.
+    """
+
+    def __init__(self, workspace):
+        self.workspace = str(workspace)
+
+    def sha256(self, path):
+        return {STOCK: STOCK_SHA, SEED: SEED_SHA}[str(path)]
+
+    def exists(self, path):
+        return str(path) in {STOCK, SEED}
+
+    def is_readable_dir(self, path):
+        return str(path) == self.workspace
+
+    def run(self, argv, timeout=120):
+        if argv[0] == "ldd":
+            return 0, healthy_ldd(), ""
+        if argv[1] == "-h":
+            return 0, HELP_TEXT, ""
+        return 127, "", "not found"
+
+    def which(self, name):
+        return None
+
+    def env(self, name, default=None):
+        return self.workspace if name == "PHOTOGRAM_WORKSPACE" else default
 
 
 class DoctorTests(unittest.TestCase):
@@ -275,6 +310,69 @@ class DoctorTests(unittest.TestCase):
         inspector = FakeInspector(ldd={STOCK: healthy_ldd(), SEED: healthy_ldd()})
         report = TOOL.build_doctor_report(manifest, inspector, workspace_env="/work")
         self.assertEqual(report["evidence_identity"], VALIDATOR.evidence_identity(manifest))
+
+
+class ProbeOwnershipIntegrationTests(unittest.TestCase):
+    """Real filesystem tests for the owned probe directory (not the fake probe)."""
+
+    def test_preexisting_probe_dir_survives_prepare_untouched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            foreign = workspace / ".photogram-dev-probe"
+            foreign.mkdir()
+            sentinel = foreign / "sentinel.txt"
+            sentinel.write_text("foreign content\n")
+
+            inspector = RealProbeInspector(workspace)
+            report = TOOL.build_prepare_report(
+                fixture_manifest(), inspector, workspace_env=str(workspace)
+            )
+
+            # Prepare succeeded using a *different*, freshly created directory.
+            self.assertTrue(report["prepare_ok"])
+            # The pre-existing colliding directory and its sentinel are intact.
+            self.assertTrue(sentinel.is_file())
+            self.assertEqual(sentinel.read_text(), "foreign content\n")
+            self.assertEqual(
+                sorted(p.name for p in workspace.iterdir()),
+                [".photogram-dev-probe"],
+            )
+
+    def test_probe_dir_is_created_and_fully_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            inspector = TOOL.Inspector()
+
+            probe = inspector.make_probe(str(workspace), ".photogram-dev-probe")
+
+            self.assertIsNotNone(probe["path"])
+            self.assertTrue(probe["path"].startswith(str(workspace / ".photogram-dev-probe-")))
+            self.assertTrue(probe["write_ok"])
+            self.assertTrue(probe["cleaned"])
+            self.assertFalse(Path(probe["path"]).exists())
+            self.assertEqual(list(workspace.iterdir()), [])
+
+    def test_cleanup_failure_marks_not_cleaned_and_prepare_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            inspector = RealProbeInspector(workspace)
+
+            with mock.patch.object(
+                TOOL.shutil, "rmtree", side_effect=OSError("forced cleanup failure")
+            ):
+                report = TOOL.build_prepare_report(
+                    fixture_manifest(), inspector, workspace_env=str(workspace)
+                )
+
+            check = next(c for c in report["checks"] if c["name"] == "workspace_uid_write")
+            self.assertFalse(check["ok"])
+            self.assertIn("cleaned=False", check["detail"])
+            self.assertFalse(report["prepare_ok"])
+            self.assertFalse(report["host_prerequisites"]["ok"])
+            self.assertFalse(report["host_prerequisites"]["workspace_probe_cleaned"])
+            # The un-cleanable directory is exactly the one probe it owned.
+            leftovers = [p.name for p in workspace.iterdir()]
+            self.assertTrue(any(n.startswith(".photogram-dev-probe-") for n in leftovers))
 
 
 class GpuIdentityPolicyTests(unittest.TestCase):

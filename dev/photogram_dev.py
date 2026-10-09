@@ -37,6 +37,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 MANIFEST_PATH = Path("/opt/photogram-dev/manifest.json")
@@ -107,17 +108,28 @@ class Inspector:
         return os.environ.get(name, default)
 
     def make_probe(self, workspace, name):
-        """Create and remove exactly one owned probe directory (explicit modes)."""
-        path = Path(workspace) / name
+        """Create and remove exactly one *exclusively owned* probe directory.
+
+        The directory name is made unique by appending a random suffix
+        (``tempfile.mkdtemp``), so it can never collide with, reuse, or
+        overwrite a pre-existing path the caller does not own.  Only the exact
+        directory this call created is removed; a cleanup failure is reported
+        via ``cleaned=False`` and never raises or deletes foreign content.
+        """
+        try:
+            path = Path(tempfile.mkdtemp(dir=workspace, prefix=name + "-"))
+        except OSError:
+            return {"path": None, "write_ok": False, "cleaned": False}
         write_ok = False
         try:
-            path.mkdir(parents=False, exist_ok=False)
             (path / "owned-probe").write_text("photogram-dev uid probe\n")
             write_ok = (path / "owned-probe").read_text() == "photogram-dev uid probe\n"
         except OSError:
             write_ok = False
-        finally:
-            shutil.rmtree(path, ignore_errors=True)
+        try:
+            shutil.rmtree(path)
+        except OSError:
+            return {"path": str(path), "write_ok": write_ok, "cleaned": False}
         return {"path": str(path), "write_ok": write_ok, "cleaned": not path.exists()}
 
 
@@ -229,27 +241,39 @@ def build_doctor_report(manifest, inspector, workspace_env=None, manifest_path=N
 def build_prepare_report(manifest, inspector, workspace_env=None, probe_name=".photogram-dev-probe"):
     """Explicit workspace validation: the ONLY mode that probes write access.
 
-    Creates and removes exactly one owned probe directory; never touches other
-    files and never fixes permissions with a DAC bypass.
+    Creates and removes exactly one exclusively owned, uniquely named probe
+    directory; never touches other files and never fixes permissions with a DAC
+    bypass.
 
     CPU-only success is reported as the additive ``prepare_ok`` field:
     ``cpu_ready`` AND every host prerequisite satisfied (readable workspace plus
-    the passed write probe).  No GPU work happens here -- ``gpu_status`` stays
+    a passed write probe that was also fully cleaned up).  A leftover probe
+    fails the gate, so no owned probe is ever silently abandoned.  No GPU work
+    happens here -- ``gpu_status`` stays
     ``not_checked`` and the full ``ready`` receipt is reserved for an explicit
     ``gpu-smoke``.
     """
     workspace = (workspace_env or inspector.env("PHOTOGRAM_WORKSPACE") or DEFAULT_WORKSPACE)
     report = build_doctor_report(manifest, inspector, workspace_env=workspace)
     probe = inspector.make_probe(workspace, probe_name)
-    write_ok = probe["write_ok"]
+    write_ok = bool(probe["write_ok"])
+    cleaned = bool(probe["cleaned"])
+    # The probe check passes only when the owned directory was both written to
+    # AND fully removed: a leftover probe must fail the prepare gate.
+    probe_ok = write_ok and cleaned
     report["command"] = "prepare"
     report["checks"].append(
-        _check("workspace_uid_write", write_ok, f"probe={probe['path']} cleaned={probe['cleaned']}")
+        _check(
+            "workspace_uid_write",
+            probe_ok,
+            f"probe={probe['path']} write_ok={write_ok} cleaned={cleaned}",
+        )
     )
     report["host_prerequisites"] = {
         "workspace_readable": report["host_prerequisites"]["workspace_readable"],
         "workspace_uid_writable": write_ok,
-        "ok": report["host_prerequisites"]["workspace_readable"] and write_ok,
+        "workspace_probe_cleaned": cleaned,
+        "ok": report["host_prerequisites"]["workspace_readable"] and probe_ok,
     }
     report["ready"] = report["cpu_ready"] and report["gpu_status"] == "passed" and report["host_prerequisites"]["ok"]
     # CPU-only success signal: prepare never runs the GPU, so `ready` can never
