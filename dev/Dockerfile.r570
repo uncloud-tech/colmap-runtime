@@ -116,6 +116,10 @@ ARG SEED_PATCH_SHA256
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 COPY dev/build-control.sh /opt/photogram-dev/build-control.sh
 COPY dev/patches/seed-minimal-d7ffb9c.patch /opt/photogram-dev/patches/seed-minimal-d7ffb9c.patch
+# The actual CPython version is produced in the ``python`` stage; bring its
+# marker here so the toolchain record reflects the interpreter that is truly
+# installed instead of a hardcoded literal (no stage reorder needed).
+COPY --from=python /opt/photogram-dev/evidence/python-version.txt /opt/photogram-dev/evidence/python-version.txt
 
 RUN --network=none set -eux; \
     test "$(sha256sum /opt/photogram-dev/patches/seed-minimal-d7ffb9c.patch | awk '{print $1}')" = "${SEED_PATCH_SHA256}"; \
@@ -129,7 +133,7 @@ RUN --network=none set -eux; \
       echo "gcc=$(gcc -dumpfullversion)"; \
       echo "cmake=$(cmake --version | head -1 | awk '{print $3}')"; \
       echo "ninja=$(ninja --version)"; \
-      echo "python=3.14.7"; \
+      echo "python=$(cat /opt/photogram-dev/evidence/python-version.txt)"; \
     } > /opt/photogram-dev/evidence/toolchain.txt
 
 # ---------------------------------------------------------------------------
@@ -156,6 +160,8 @@ RUN --network=none set -eux; \
         --lock /opt/colmap-python/environment-lock.json \
         --requirements /opt/colmap-python/requirements.lock; \
     /opt/colmap-python/bin/python3.14 -E -s -B -c "import numpy, scipy, matplotlib, pycolmap, PIL, contourpy, kiwisolver, cycler, fontTools"; \
+    /opt/colmap-python/bin/python3.14 --version | awk '{print $2}' \
+        > /opt/photogram-dev/evidence/python-version.txt; \
     rm -rf /tmp/cpython.sha256
 
 # ---------------------------------------------------------------------------

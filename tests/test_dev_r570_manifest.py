@@ -54,6 +54,7 @@ FACTS = {
         "scipy==1.18.1", "six==1.17.0",
     ],
     "apt_versions": {"jq": "1.7.1"},
+    "harness_files": {name: "a" * 64 for name in VALIDATOR.HARNESS_FILES},
 }
 
 
@@ -91,12 +92,34 @@ class ManifestTests(unittest.TestCase):
             lambda m: m["python"].__setitem__("native_loader_cuda129", True),
             lambda m: m["controls"]["stock"].__setitem__("path", "/opt/colmap-pr8/bin/colmap"),
             lambda m: m["readiness"].__setitem__("command", "colmap"),
+            lambda m: m.__setitem__("harness_files", {}),
+            lambda m: m["harness_files"].__setitem__(
+                f"{VALIDATOR.HARNESS_ROOT}/photogram_dev.py", "not-a-hash"
+            ),
         ):
             with self.subTest(mutate=mutate):
                 manifest = valid_manifest()
                 mutate(manifest)
                 with self.assertRaises(VALIDATOR.ContractError):
                     VALIDATOR.validate_manifest(manifest)
+
+    def test_harness_files_recorded_and_required(self):
+        manifest = valid_manifest()
+        self.assertEqual(set(manifest["harness_files"]), set(VALIDATOR.HARNESS_FILES))
+        self.assertIn(f"{VALIDATOR.HARNESS_ROOT}/photogram_dev.py", manifest["harness_files"])
+        self.assertIn(f"{VALIDATOR.HARNESS_ROOT}/gpu-probe/driver_resolve.c", manifest["harness_files"])
+        missing = valid_manifest()
+        missing.pop("harness_files")
+        with self.assertRaises(VALIDATOR.ContractError):
+            VALIDATOR.validate_manifest(missing)
+        extra = valid_manifest()
+        extra["harness_files"]["/opt/photogram-dev/rogue.py"] = "b" * 64
+        with self.assertRaises(VALIDATOR.ContractError):
+            VALIDATOR.validate_manifest(extra)
+        unhashed = valid_manifest()
+        unhashed["harness_files"][f"{VALIDATOR.HARNESS_ROOT}/entrypoint.r570.sh"] = "not-a-hash"
+        with self.assertRaises(VALIDATOR.ContractError):
+            VALIDATOR.validate_manifest(unhashed)
 
     def test_evidence_identity_tracks_payload(self):
         first = VALIDATOR.evidence_identity(valid_manifest())

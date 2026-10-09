@@ -28,6 +28,9 @@ import check_dev_r570_manifest as VALIDATOR  # noqa: E402
 
 EVIDENCE_ROOT = Path("/opt/photogram-dev/evidence")
 MVS_OBJECT_NAMES = ("patch_match_cuda", "gpu_mat_prng", "gpu_mat_ref_image")
+# Deployed harness payload whose exact bytes must be verifiable from the
+# manifest ("verify what is deployed").  Absolute in-image paths.
+HARNESS_FILES = VALIDATOR.HARNESS_FILES
 APT_UTILITY_PACKAGES = (
     "ca-certificates", "curl", "git", "cmake", "ninja-build", "pkg-config",
     "gnupg", "xz-utils", "file", "unzip", "lsb-release", "procps", "time",
@@ -90,6 +93,11 @@ def collect_facts(root=EVIDENCE_ROOT, run=subprocess.run):
     facts["source_archive_sha256"] = parse_sha256_file(
         _evidence(root, "source-archive.sha256").read_text()
     )
+    # Hash the harness as actually deployed inside the image (not the build
+    # context) so a stale/edited script is caught by the manifest.
+    facts["harness_files"] = {
+        name: VALIDATOR.sha256_hex(Path(name).read_bytes()) for name in HARNESS_FILES
+    }
     for name in ("stock", "seed"):
         arm = _evidence(root, name)
         facts["controls"][name] = {
@@ -189,6 +197,7 @@ def build_manifest(facts):
             }
             for name in VALIDATOR.CONTROL_PATHS
         },
+        "harness_files": dict(facts["harness_files"]),
         "toolchain": {
             "nvcc": facts["toolchain"]["nvcc"],
             "cuda": facts["toolchain"]["cuda"],

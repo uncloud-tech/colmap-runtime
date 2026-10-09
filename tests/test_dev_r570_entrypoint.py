@@ -1,6 +1,10 @@
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
+import subprocess
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +47,7 @@ def fixture_manifest():
         "toolchain": {"nvcc": "12.8", "cuda": "12.8", "gcc": "13.3.0", "cmake": "3.28.3", "ninja": "1.11.1", "python": "3.14.7"},
         "python_packages": [f"pkg{i}==1.0" for i in range(16)],
         "apt_versions": {"jq": "1.7.1"},
+        "harness_files": {name: "a" * 64 for name in VALIDATOR.HARNESS_FILES},
     }
     return GENERATOR.build_manifest(facts)
 
@@ -92,6 +97,10 @@ def healthy_ldd():
 
 
 class DoctorTests(unittest.TestCase):
+    def _exit(self, report):
+        with contextlib.redirect_stdout(io.StringIO()):
+            return TOOL._print(report, True)
+
     def test_doctor_reports_cpu_ready_but_never_gpu_ready(self):
         manifest = fixture_manifest()
         inspector = FakeInspector(ldd={STOCK: healthy_ldd(), SEED: healthy_ldd()})
@@ -142,6 +151,65 @@ class DoctorTests(unittest.TestCase):
         prepare_fail = TOOL.build_prepare_report(manifest, failing, workspace_env="/work")
         self.assertFalse(prepare_fail["host_prerequisites"]["ok"])
 
+    def test_exit_semantics_prepare_gate_and_documented_doctor(self):
+        manifest = fixture_manifest()
+        healthy = FakeInspector(ldd={STOCK: healthy_ldd(), SEED: healthy_ldd()})
+        # Documented: a cpu-ready doctor is informational and exits 0.
+        doctor = TOOL.build_doctor_report(manifest, healthy, workspace_env="/work")
+        self.assertTrue(doctor["cpu_ready"])
+        self.assertEqual(self._exit(doctor), 0)
+        # prepare never runs the GPU smoke, so it never certifies ready -> nonzero.
+        prepare_ok = TOOL.build_prepare_report(manifest, healthy, workspace_env="/work")
+        self.assertEqual(self._exit(prepare_ok), 1)
+        # The concrete defect: a failed write probe must not exit 0.
+        failing = FakeInspector(ldd={STOCK: healthy_ldd(), SEED: healthy_ldd()}, probe_write=False)
+        prepare_fail = TOOL.build_prepare_report(manifest, failing, workspace_env="/work")
+        self.assertFalse(prepare_fail["host_prerequisites"]["ok"])
+        self.assertEqual(self._exit(prepare_fail), 1)
+
+    def test_prepare_report_is_validated_on_build(self):
+        manifest = fixture_manifest()
+        inspector = FakeInspector(ldd={STOCK: healthy_ldd(), SEED: healthy_ldd()})
+        calls = []
+        original = TOOL.VALIDATOR.validate_doctor_report
+
+        def spy(report):
+            calls.append(report)
+            return original(report)
+
+        TOOL.VALIDATOR.validate_doctor_report = spy
+        try:
+            report = TOOL.build_prepare_report(manifest, inspector, workspace_env="/work")
+        finally:
+            TOOL.VALIDATOR.validate_doctor_report = original
+        self.assertTrue(calls)
+        # Any mutation after construction is still rejected independently.
+        report["ready"] = True
+        with self.assertRaises(VALIDATOR.ContractError):
+            VALIDATOR.validate_doctor_report(report)
+
+    def test_prohibited_markers_are_precise(self):
+        self.assertNotIn("/nvidia/", TOOL.PROHIBITED_CLOSURE_MARKERS)
+        self.assertIn("nvidia_cuda_runtime", TOOL.PROHIBITED_CLOSURE_MARKERS)
+        self.assertIn("/dist-packages/", TOOL.PROHIBITED_CLOSURE_MARKERS)
+
+    def test_host_injected_nvidia_driver_dir_is_not_prohibited(self):
+        manifest = fixture_manifest()
+        ldd = "\tlibcuda.so.1 => /usr/local/nvidia/lib64/libcuda.so.1 (0x1)\n"
+        inspector = FakeInspector(ldd={STOCK: ldd, SEED: healthy_ldd()})
+        report = TOOL.build_doctor_report(manifest, inspector, workspace_env="/work")
+        self.assertTrue(report["cpu_ready"])
+
+    def test_wheel_local_cuda_stub_is_still_prohibited(self):
+        manifest = fixture_manifest()
+        ldd = (
+            "\tlibcudart.so.12 => /opt/colmap-python/lib/python3.14/site-packages/"
+            "nvidia/cuda_runtime/lib/libcudart.so.12 (0x1)\n"
+        )
+        inspector = FakeInspector(ldd={STOCK: ldd, SEED: healthy_ldd()})
+        report = TOOL.build_doctor_report(manifest, inspector, workspace_env="/work")
+        self.assertFalse(report["cpu_ready"])
+
     def test_gpu_smoke_is_explicit_and_gates_readiness(self):
         manifest = fixture_manifest()
         passed = {
@@ -185,6 +253,69 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(report["evidence_identity"], VALIDATOR.evidence_identity(manifest))
 
 
+class GpuIdentityPolicyTests(unittest.TestCase):
+    def test_supported_arches_derived_from_manifest(self):
+        manifest = fixture_manifest()
+        self.assertEqual(TOOL.supported_compute_arches(manifest), (86, 89, 120))
+        policy = TOOL.gpu_identity_policy(manifest)
+        self.assertEqual(policy["supported_arches"], ["8.6", "8.9", "12.0"])
+        self.assertEqual(policy["min_supported_arch"], "8.6")
+        self.assertEqual(policy["kernel_probe_arch"], "sm_86")
+        self.assertEqual(policy["min_driver"], "570.195.03")
+
+    def test_sm89_host_with_newer_driver_passes_identity(self):
+        manifest = fixture_manifest()
+        result = TOOL.evaluate_gpu_identity(manifest, "571.10", "8.9")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["driver_ok"])
+        self.assertTrue(result["arch_ok"])
+
+    def test_sm120_host_passes_identity_and_is_noted(self):
+        manifest = fixture_manifest()
+        result = TOOL.evaluate_gpu_identity(manifest, "580.0", "12.0")
+        self.assertTrue(result["ok"])
+        self.assertTrue(any("sm_86" in note for note in result["notes"]))
+
+    def test_driver_below_policy_fails_identity(self):
+        manifest = fixture_manifest()
+        result = TOOL.evaluate_gpu_identity(manifest, "570.194.99", "8.6")
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["driver_ok"])
+        self.assertIn("policy_min_driver", result["detail"])
+
+    def test_arch_below_minimum_fails_identity(self):
+        manifest = fixture_manifest()
+        result = TOOL.evaluate_gpu_identity(manifest, "571", "7.5")
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["arch_ok"])
+
+    def test_gpu_smoke_report_records_tested_values_and_policy(self):
+        manifest = fixture_manifest()
+        probe = {
+            "checks": [("nvidia_smi_identity", True, "ok")],
+            "gpu_ok": True, "host_ok": True, "nvidia_smi": True, "nvidia_device_node": True,
+            "cpu_ready": True, "driver": "571.10", "uuid": "GPU-x", "compute_cap": "8.9",
+            "libcuda_realpath": "/usr/local/nvidia/lib64/libcuda.so.1", "cuinit_rc": 0,
+            "kernel_values": 1024,
+            "identity_policy": TOOL.gpu_identity_policy(manifest),
+            "identity_notes": [],
+        }
+        report = TOOL.build_gpu_smoke_report(manifest, probe)
+        self.assertEqual(report["gpu"]["tested"], {"driver": "571.10", "compute_cap": "8.9"})
+        self.assertEqual(report["gpu"]["policy"]["min_driver"], "570.195.03")
+        self.assertEqual(report["gpu"]["probe_arch"], "sm_86")
+        VALIDATOR.validate_doctor_report(report)
+
+    def test_gpu_smoke_always_records_policy_even_without_nvidia_smi(self):
+        manifest = fixture_manifest()
+        inspector = FakeInspector(ldd={STOCK: healthy_ldd(), SEED: healthy_ldd()})
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = TOOL.run_gpu_smoke(manifest, inspector, tmp)
+        self.assertFalse(probe["gpu_ok"])
+        self.assertEqual(probe["identity_policy"]["min_driver"], "570.195.03")
+        self.assertEqual(probe["identity_policy"]["supported_arches"], ["8.6", "8.9", "12.0"])
+
+
 class EntrypointAndRecipeTests(unittest.TestCase):
     def test_entrypoint_checks_both_controls_and_never_selects_path(self):
         text = (ROOT / "dev/entrypoint.r570.sh").read_text()
@@ -209,6 +340,32 @@ class EntrypointAndRecipeTests(unittest.TestCase):
         # Base digest must be the 12.8.1 pin, never 12.9.
         self.assertIn("nvidia/cuda:12.8.1-devel-ubuntu24.04@sha256:", text)
         self.assertNotIn("nvidia/cuda:12.9", text)
+
+    def test_recipe_derives_python_from_installed_interpreter(self):
+        text = (ROOT / "dev/Dockerfile.r570").read_text()
+        # The toolchain record must not hardcode the interpreter version.
+        self.assertIn("python-version.txt", text)
+        self.assertIn("/opt/colmap-python/bin/python3.14 --version", text)
+        self.assertNotIn('echo "python=3.14.7"', text)
+        self.assertIn("COPY --from=python", text)
+
+    def test_build_control_requires_patch_sha(self):
+        result = subprocess.run(
+            ["bash", str(ROOT / "dev/build-control.sh"), "stock", "/tmp/archive",
+             "0" * 64, "/tmp/patch"],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("patch requires sha", result.stderr)
+
+    def test_probe_references_match_deployed_filenames(self):
+        text = (ROOT / "dev/photogram_dev.py").read_text()
+        for name in ("driver_resolve.c", "cuda_launch.cu"):
+            self.assertTrue((ROOT / "dev/gpu_probe" / name).is_file())
+            self.assertIn(f"gpu-probe/{name}", text)
+        # The old hyphenated spellings referenced files that were never deployed.
+        self.assertNotIn("gpu-probe/driver-resolve.c", text)
+        self.assertNotIn("gpu-probe/cuda-launch.cu", text)
 
 
 if __name__ == "__main__":

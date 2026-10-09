@@ -10,9 +10,12 @@
 #
 # Usage: build-control.sh <name> <archive> <archive-sha256> [patch] [patch-sha256]
 set -euo pipefail
-NAME="${1:?usage: build-control.sh <name> <archive> <sha256> [patch] [patch-sha256]}"
+NAME="${1:?usage: build-control.sh <name> <archive> <archive-sha256> [patch] [patch-sha256]}"
 ARCHIVE="${2:?}"; ARCHIVE_SHA="${3:?}"; PATCH="${4:-}"; PATCH_SHA="${5:-}"
-[ -n "$PATCH_SHA" ] || true
+if [ -n "$PATCH" ] && [ -z "$PATCH_SHA" ]; then
+  echo "STOP: patch requires sha" >&2
+  exit 2
+fi
 
 ARCH="86-real;89-real;120-real;70-virtual"
 DEP=/opt/deps
@@ -49,6 +52,7 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
 
 # Derive the install-required static library targets from the recursive
 # generated cmake_install.cmake inputs (validated in Task0: 25 libraries).
+# shellcheck disable=SC2016  # awk receives the literal script; no shell expansion wanted.
 mapfile -t libs < <(find "$BUILD" -name cmake_install.cmake -print0 \
   | xargs -0 awk '/TYPE STATIC_LIBRARY FILES/ {n=split($0,a,"\""); p=a[n-1]; sub(/^.*\/lib/,"",p); sub(/\.a$/,"",p); print p}' \
   | sort -u)

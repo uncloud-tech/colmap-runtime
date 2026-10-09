@@ -26,6 +26,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -33,15 +34,21 @@ from pathlib import Path
 
 MANIFEST_PATH = Path("/opt/photogram-dev/manifest.json")
 DEFAULT_WORKSPACE = "/work"
+# The GPU smoke compiles a bounded probe for this fixed arch only; the host
+# IDENTITY gate is policy-based and must not be restricted by it.
+KERNEL_PROBE_ARCH = "sm_86"
 
 # Prohibited loader targets: the historical PR8 install prefix and any CUDA
 # stub shipped inside a Python environment (must never satisfy the loader).
+# These markers are intentionally PRECISE: a bare substring like ``/nvidia/``
+# would wrongly reject the legitimate host-injected driver at
+# ``/usr/local/nvidia/lib64/libcuda.so``, so only the wheel-local stub names,
+# their site/dist-packages homes and the old PR8 prefix are prohibited.
 PROHIBITED_CLOSURE_MARKERS = (
     "/opt/colmap-pr8/",
     "/site-packages/",
     "/dist-packages/",
     "nvidia_cuda_runtime",
-    "/nvidia/",
 )
 
 
@@ -232,6 +239,7 @@ def build_prepare_report(manifest, inspector, workspace_env=None, probe_name=".p
         "ok": report["host_prerequisites"]["workspace_readable"] and write_ok,
     }
     report["ready"] = report["cpu_ready"] and report["gpu_status"] == "passed" and report["host_prerequisites"]["ok"]
+    VALIDATOR.validate_doctor_report(report)
     return report
 
 
@@ -261,6 +269,13 @@ def build_gpu_smoke_report(manifest, probe):
             "libcuda_realpath": probe.get("libcuda_realpath"),
             "cuinit_rc": probe.get("cuinit_rc"),
             "kernel_values": probe.get("kernel_values"),
+            "probe_arch": KERNEL_PROBE_ARCH,
+            "tested": {
+                "driver": probe.get("driver"),
+                "compute_cap": probe.get("compute_cap"),
+            },
+            "policy": probe.get("identity_policy"),
+            "notes": probe.get("identity_notes", []),
         },
         "readiness_command": manifest["readiness"]["command"],
     }
@@ -271,14 +286,129 @@ def build_gpu_smoke_report(manifest, probe):
     return report
 
 
+def _version_tuple(text):
+    """Dotted numeric version -> comparable integer tuple."""
+    parts = re.findall(r"\d+", text or "")
+    return tuple(int(part) for part in parts)
+
+
+def _compute_cap_value(text):
+    """``nvidia-smi`` compute capability (e.g. ``8.6``/``12.0``) -> integer (86/120)."""
+    match = re.fullmatch(r"\s*(\d+)\.(\d+)\s*", text or "")
+    if not match:
+        return None
+    return int(match.group(1)) * 10 + int(match.group(2))
+
+
+def _arch_name(value):
+    """Integer compute capability (86/120) -> documented name (``8.6``/``12.0``)."""
+    return f"{value // 10}.{value % 10}"
+
+
+def supported_compute_arches(manifest):
+    """Derive the native SASS architectures this image actually ships.
+
+    The supported set is the union of the controls' observed MVS ELF archs
+    (``mvs_evidence.per_control[*].observed_elf``) and every ``-real`` entry of
+    the requested ``build.cuda_architectures``.  It is derived from the baked
+    manifest, never hardcoded here.
+    """
+    values = set()
+    for per_control in manifest["mvs_evidence"]["per_control"].values():
+        for arch in per_control["observed_elf"]:
+            match = re.fullmatch(r"sm_(\d+)", arch)
+            if match:
+                values.add(int(match.group(1)))
+    for entry in manifest["build"]["cuda_architectures"].split(";"):
+        entry = entry.strip()
+        if entry.endswith("-real") and entry[: -len("-real")].isdigit():
+            values.add(int(entry[: -len("-real")]))
+    return tuple(sorted(values))
+
+
+def gpu_identity_policy(manifest):
+    """Documented host identity policy for the explicit GPU smoke."""
+    arches = supported_compute_arches(manifest)
+    return {
+        "min_driver": manifest["gpu"]["policy_min_driver"],
+        "documented_min_driver": manifest["gpu"]["documented_min_driver"],
+        "supported_arches": [_arch_name(value) for value in arches],
+        "min_supported_arch": _arch_name(arches[0]) if arches else None,
+        "kernel_probe_arch": KERNEL_PROBE_ARCH,
+    }
+
+
+def evaluate_gpu_identity(manifest, driver, compute_cap):
+    """Policy-based NVIDIA identity gate (NOT hard equality).
+
+    A valid host has ``driver >= policy_min_driver`` and a compute capability
+    at or above the lowest architecture the baked controls actually support.
+    The ``sm_86`` kernel probe stays a bounded probe; hosts at cc >= 9.0 only
+    get a note that the probe relies on JIT/binary compatibility.
+    """
+    policy = gpu_identity_policy(manifest)
+    arches = supported_compute_arches(manifest)
+    issues = []
+
+    if not _version_tuple(driver):
+        driver_ok = False
+        issues.append("driver unavailable")
+    elif _version_tuple(driver) < _version_tuple(policy["min_driver"]):
+        driver_ok = False
+        issues.append(f"driver {driver} < policy_min_driver {policy['min_driver']}")
+    else:
+        driver_ok = True
+
+    cc_value = _compute_cap_value(compute_cap)
+    min_arch = arches[0] if arches else None
+    if cc_value is None:
+        arch_ok = False
+        issues.append("compute capability unavailable")
+    elif min_arch is None:
+        arch_ok = False
+        issues.append("manifest documents no supported architecture")
+    elif cc_value < min_arch:
+        arch_ok = False
+        issues.append(
+            f"compute capability {compute_cap} below minimum supported {_arch_name(min_arch)}"
+        )
+    else:
+        arch_ok = True
+
+    notes = []
+    if cc_value is not None and cc_value >= 90:
+        notes.append(
+            f"host cc {compute_cap} exceeds the {KERNEL_PROBE_ARCH} kernel probe; "
+            "probe relies on PTX/binary compatibility, identity is not restricted"
+        )
+
+    detail = (
+        f"driver={driver} cc={compute_cap} "
+        f"policy_min_driver={policy['min_driver']} supported_arches={policy['supported_arches']}"
+    )
+    if issues:
+        detail += " issues=" + "; ".join(issues)
+    if notes:
+        detail += " note=" + "; ".join(notes)
+    return {
+        "ok": driver_ok and arch_ok,
+        "driver_ok": driver_ok,
+        "arch_ok": arch_ok,
+        "policy": policy,
+        "notes": notes,
+        "detail": detail,
+    }
+
+
 def run_gpu_smoke(manifest, inspector, probe_dir):
     """Perform the real probe (compiles the shipped helpers). Explicit mode only."""
     probe_dir = Path(probe_dir)
     probe_dir.mkdir(parents=True, exist_ok=True)
     checks = []
     probe = {"cpu_ready": True, "checks": checks}
-    expected_driver = manifest["gpu"]["policy_min_driver"]
-    expected_cc = "8.6"
+    # Always surface the policy fields, even when nvidia-smi is unavailable.
+    probe["identity_policy"] = gpu_identity_policy(manifest)
+    probe["identity_notes"] = []
     probe["nvidia_device_node"] = inspector.exists("/dev/nvidia0") or inspector.exists("/dev/nvidiactl")
     nvidia_smi = inspector.which("nvidia-smi")
     probe["nvidia_smi"] = bool(nvidia_smi)
@@ -290,14 +420,17 @@ def run_gpu_smoke(manifest, inspector, probe_dir):
         driver = values[2] if len(values) > 2 else None
         cc = values[3] if len(values) > 3 else None
         probe["uuid"], probe["driver"], probe["compute_cap"] = (values[0] if values else None, driver, cc)
-        checks.append(_check("nvidia_smi_identity", code == 0 and driver == expected_driver and cc == expected_cc,
-                             f"driver={driver} cc={cc} expected={expected_driver}/{expected_cc}"))
+        identity = evaluate_gpu_identity(manifest, driver, cc)
+        probe["identity_policy"] = identity["policy"]
+        probe["identity_notes"] = identity["notes"]
+        checks.append(_check("nvidia_smi_identity", identity["ok"], identity["detail"]))
     else:
         checks.append(_check("nvidia_smi_identity", False, "nvidia-smi absent"))
 
     build = probe_dir / "driver-resolve"
     code, out, err = inspector.run(
-        ["nvcc", "-arch=sm_86", "-o", str(build), "/opt/photogram-dev/gpu-probe/driver-resolve.c", "-ldl"]
+        ["nvcc", f"-arch={KERNEL_PROBE_ARCH}", "-o", str(build),
+         "/opt/photogram-dev/gpu-probe/driver_resolve.c", "-ldl"]
     )
     resolve_ok = code == 0
     realpath = None
@@ -318,7 +451,8 @@ def run_gpu_smoke(manifest, inspector, probe_dir):
 
     launch = probe_dir / "cuda-launch"
     code, out, err = inspector.run(
-        ["nvcc", "-arch=sm_86", "-o", str(launch), "/opt/photogram-dev/gpu-probe/cuda-launch.cu", "-ldl"]
+        ["nvcc", f"-arch={KERNEL_PROBE_ARCH}", "-o", str(launch),
+         "/opt/photogram-dev/gpu-probe/cuda_launch.cu", "-ldl"]
     )
     kernel_ok = code == 0 and "RESULT: 1024 unique values exactly 2*i+1" in out
     probe["kernel_values"] = 1024 if kernel_ok else 0
@@ -337,6 +471,11 @@ def _print(report, as_json):
               f"gpu_status={report['gpu_status']} ready={report['ready']}")
         for check in report["checks"]:
             print(f"  [{'ok' if check['ok'] else 'FAIL'}] {check['name']}: {check['detail']}")
+    if report["command"] == "prepare":
+        # prepare is a validation gate: exit nonzero unless the report is fully
+        # ready (it never runs the GPU smoke, so a prepare success is impossible
+        # until a separate explicit gpu-smoke passes).
+        return 0 if report["ready"] else 1
     return 0 if report["cpu_ready"] and report["gpu_status"] != "failed" else 1
 
 

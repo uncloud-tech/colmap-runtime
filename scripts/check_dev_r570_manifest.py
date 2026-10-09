@@ -75,6 +75,16 @@ PYTHON_PREFIX = "/opt/colmap-python"
 PYTHON_INTERPRETER = "3.14.7"
 PYTHON_PIP = "26.2.1"
 PYTHON_PACKAGE_COUNT = 16
+# Deployed harness payload: its exact bytes must be verifiable from the manifest.
+HARNESS_ROOT = "/opt/photogram-dev"
+HARNESS_FILES = (
+    f"{HARNESS_ROOT}/photogram_dev.py",
+    f"{HARNESS_ROOT}/entrypoint.r570.sh",
+    f"{HARNESS_ROOT}/check_dev_r570_manifest.py",
+    f"{HARNESS_ROOT}/build-control.sh",
+    f"{HARNESS_ROOT}/gpu-probe/cuda_launch.cu",
+    f"{HARNESS_ROOT}/gpu-probe/driver_resolve.c",
+)
 READINESS_COMMAND = "photogram-dev doctor"
 GPU_SMOKE_COMMAND = "photogram-dev gpu-smoke"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -270,6 +280,12 @@ def validate_manifest(manifest):
         raise ContractError("readiness command mismatch")
     if manifest["readiness"]["gpu_command"] != GPU_SMOKE_COMMAND:
         raise ContractError("gpu-smoke command mismatch")
+
+    harness = manifest.get("harness_files")
+    if not isinstance(harness, dict) or set(harness) != set(HARNESS_FILES):
+        raise ContractError("harness_files must record exactly the deployed harness set")
+    for name in HARNESS_FILES:
+        _require_hex(harness[name], f"harness_files.{name}")
     return manifest
 
 
