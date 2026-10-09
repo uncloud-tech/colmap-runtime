@@ -184,6 +184,8 @@ COPY dev/python/requirements.lock /opt/photogram-dev/evidence/python-requirement
 
 # Entry-point control identity records (checked before any governed run).
 RUN set -eux; \
+    cmp /opt/photogram-dev/evidence/stock/install-library-targets.txt /opt/photogram-dev/evidence/seed/install-library-targets.txt; \
+    cp /opt/photogram-dev/evidence/stock/install-library-targets.txt /opt/photogram-dev/evidence/install-library-targets.txt; \
     cp /opt/photogram-dev/evidence/stock/binary.sha256 /opt/photogram-dev/controls/stock.sha256; \
     cp /opt/photogram-dev/evidence/seed/binary.sha256 /opt/photogram-dev/controls/seed.sha256; \
     ln -s /opt/colmap-python/bin/python3.14 /usr/local/bin/python; \

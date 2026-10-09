@@ -65,6 +65,14 @@ jobs:
               --entrypoint /opt/photogram-dev/entrypoint.r570.sh \
               colmap-dev:r570 "$cmd" --json 2>&1 | tee "reports/${cmd}.log"
           done
+      - name: Offline non-root external source build
+        run: |
+          set -euo pipefail
+          WORK=$(mktemp -d)
+          docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
+            --user "$(id -u):$(id -g)" --entrypoint /bin/bash \
+            -v "$WORK:/workspace" -v "$PWD/scripts/check_r570_offline_build.sh:/check.sh:ro" \
+            colmap-dev:r570 /check.sh 2>&1 | tee reports/offline-nonroot-build.log
       - name: Generate SBOM scan (non-blocking security finding capture)
         run: |
           set -euo pipefail
@@ -72,6 +80,21 @@ jobs:
             aquasec/trivy:0.58.1 image --scanners vuln --format json --timeout 10m \
             --output /scan/reports/vulnerabilities.json colmap-dev:r570 || true
           test -s reports/vulnerabilities.json
+      - name: Export validated image for handoff without registry publication
+        run: |
+          set -euo pipefail
+          mkdir -p image-export
+          docker save colmap-dev:r570 | gzip -1 > image-export/r570-image.tar.gz
+          sha256sum image-export/r570-image.tar.gz > reports/image-archive.sha256
+          stat -c '%s' image-export/r570-image.tar.gz > reports/compressed-bytes.txt
+          docker image inspect --format '{{.Size}}' colmap-dev:r570 > reports/expanded-bytes.txt
+      - name: Retain image archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: r570-image-${{ github.run_id }}
+          path: image-export/
+          compression-level: 0
+          retention-days: 7
       - name: Retain evidence on failure or success
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
