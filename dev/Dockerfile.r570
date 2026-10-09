@@ -160,6 +160,14 @@ RUN --network=none set -eux; \
         > /opt/photogram-dev/evidence/python-version.txt; \
     rm -rf /tmp/cpython.sha256
 
+# Remediate pip's bundled code without changing the historical scientific lock.
+COPY dev/python/remediate_pip_vendor.py /opt/photogram-dev/remediate_pip_vendor.py
+RUN /opt/colmap-python/bin/python3.14 /opt/photogram-dev/remediate_pip_vendor.py \
+      > /opt/photogram-dev/evidence/pip-vendor-remediation.json \
+    && /opt/colmap-python/bin/python3.14 -m pip check \
+    && /opt/colmap-python/bin/python3.14 -m pip debug \
+    && /opt/colmap-python/bin/python3.14 -c 'from pip._vendor import msgpack, urllib3; assert msgpack.unpackb(msgpack.packb({"ok": 1})) == {"ok": 1}; assert urllib3.__version__ == "2.8.0"'
+
 # ---------------------------------------------------------------------------
 # Stage: dev-r570 -- assemble the final image, harness, manifest and entrypoint
 # ---------------------------------------------------------------------------
@@ -171,6 +179,7 @@ ARG SEED_PATCH_SHA256
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 COPY --from=python /opt/colmap-python /opt/colmap-python
+COPY --from=python /opt/photogram-dev/evidence/pip-vendor-remediation.json /opt/photogram-dev/evidence/pip-vendor-remediation.json
 COPY --from=python /opt/photogram-dev/evidence/python-version.txt /opt/photogram-dev/evidence/python-version.txt
 RUN printf 'python=%s\n' "$(cat /opt/photogram-dev/evidence/python-version.txt)" >> /opt/photogram-dev/evidence/toolchain.txt
 

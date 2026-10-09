@@ -79,6 +79,9 @@ jobs:
             aquasec/trivy:0.58.1 image --scanners vuln --format json --timeout 10m \
             --output /scan/reports/vulnerabilities.json colmap-dev:r570 || true
           test -s reports/vulnerabilities.json
+          docker run --rm --entrypoint /bin/cat colmap-dev:r570 /opt/colmap-dev/BUILD-MANIFEST.txt > reports/BUILD-MANIFEST.txt
+          docker run --rm --entrypoint /bin/cat colmap-dev:r570 /opt/photogram-dev/evidence/pip-vendor-remediation.json > reports/pip-vendor-remediation.json
+          python3 scripts/check_dev_security.py reports/vulnerabilities.json reports/BUILD-MANIFEST.txt > reports/security-gate.json
       - name: Export validated image for handoff without registry publication
         run: |
           set -euo pipefail
