@@ -1,5 +1,10 @@
 name: Build r570 dev image
 on:
+  workflow_call:
+    inputs:
+      publish:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       publish:
@@ -28,6 +33,7 @@ jobs:
       - name: Acquire exact locked Python artifacts
         run: |
           set -euo pipefail
+          mkdir -p reports
           python3 -m dev.python.acquire --output dev/python/.staged/artifacts 2>&1 | tee reports/acquisition.log
           sha256sum dev/python/.staged/artifacts/* > reports/acquired-sha256.txt
       - name: Build r570 image (exact c6 stock + seed controls)
@@ -62,7 +68,7 @@ jobs:
       - name: Generate SBOM scan (non-blocking security finding capture)
         run: |
           set -euo pipefail
-          docker run --rm -v "$(pwd):/scan" -w /scan \
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$(pwd):/scan" -w /scan \
             aquasec/trivy:0.58.1 image --scanners vuln --format json --timeout 10m \
             --output /scan/reports/vulnerabilities.json colmap-dev:r570 || true
           test -s reports/vulnerabilities.json

@@ -20,7 +20,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  r570:
+    if: github.ref == 'refs/heads/ci/r570-cuda128-dev-image'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/build-r570.yml
+    with:
+      publish: ${{ inputs.publish }}
+    secrets: inherit
   build:
+    if: github.ref != 'refs/heads/ci/r570-cuda128-dev-image'
     permissions:
       contents: read
       packages: write
