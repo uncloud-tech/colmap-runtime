@@ -114,6 +114,7 @@ def main(argv=None):
 
     expected = {
         canonical(row["name"]): row["version"] for row in rows
+        if row["uri"].endswith(".whl")
     } | {"pip": PIP_VERSION}
     installed = distribution_closure()
     if installed != expected:
