@@ -116,10 +116,7 @@ ARG SEED_PATCH_SHA256
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 COPY dev/build-control.sh /opt/photogram-dev/build-control.sh
 COPY dev/patches/seed-minimal-d7ffb9c.patch /opt/photogram-dev/patches/seed-minimal-d7ffb9c.patch
-# The actual CPython version is produced in the ``python`` stage; bring its
-# marker here so the toolchain record reflects the interpreter that is truly
-# installed instead of a hardcoded literal (no stage reorder needed).
-COPY --from=python /opt/photogram-dev/evidence/python-version.txt /opt/photogram-dev/evidence/python-version.txt
+# The Python version is appended in the final stage after Python is installed.
 
 RUN --network=none set -eux; \
     test "$(sha256sum /opt/photogram-dev/patches/seed-minimal-d7ffb9c.patch | awk '{print $1}')" = "${SEED_PATCH_SHA256}"; \
@@ -133,7 +130,6 @@ RUN --network=none set -eux; \
       echo "gcc=$(gcc -dumpfullversion)"; \
       echo "cmake=$(cmake --version | head -1 | awk '{print $3}')"; \
       echo "ninja=$(ninja --version)"; \
-      echo "python=$(cat /opt/photogram-dev/evidence/python-version.txt)"; \
     } > /opt/photogram-dev/evidence/toolchain.txt
 
 # ---------------------------------------------------------------------------
@@ -175,6 +171,8 @@ ARG SEED_PATCH_SHA256
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 COPY --from=python /opt/colmap-python /opt/colmap-python
+COPY --from=python /opt/photogram-dev/evidence/python-version.txt /opt/photogram-dev/evidence/python-version.txt
+RUN printf 'python=%s\n' "$(cat /opt/photogram-dev/evidence/python-version.txt)" >> /opt/photogram-dev/evidence/toolchain.txt
 
 # Harness + manifest tooling (small, no speculative frameworks).
 COPY dev/photogram_dev.py dev/generate_manifest.py /opt/photogram-dev/
