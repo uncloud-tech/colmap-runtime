@@ -10,16 +10,23 @@ Design contract (see ``scripts/check_dev_r570_manifest.py``):
   ``gpu_status`` stays ``not_checked``.
 * ``prepare`` is the explicit workspace validation mode.  It is the ONLY mode
   that probes write access, and it creates and removes only its own probe
-  directory.
+  directory.  Its CPU-only success signal is the additive ``prepare_ok`` field:
+  ``cpu_ready`` AND every host prerequisite satisfied (workspace readable and
+  the owned write probe passed).  ``prepare`` never runs the GPU smoke, so its
+  ``gpu_status`` stays ``not_checked`` and its ``ready`` stays ``false``; the
+  process exits 0 iff ``prepare_ok`` is true and nonzero otherwise.
 * ``gpu-smoke`` is explicit and non-default.  Only it may set
   ``gpu_status=passed``.  It asserts the NVIDIA identity, resolves the real
   host ``libcuda.so.1`` (rejecting a Python-wheel stub), ``dlopen``/``cuInit``
   and runs an ``sm_86`` kernel whose 1024 distinct results are checked exactly.
 
-Readiness is never inferred from CPU checks alone; a ``ready`` receipt requires
-``cpu_ready`` AND ``gpu_status=passed`` AND satisfied host prerequisites.  Every
-report carries ``validator_version`` and an ``evidence_identity`` so a cached
-GPU qualification is invalidated by any changed payload input.
+Readiness is never inferred from CPU checks alone; the full ``ready`` receipt
+is reserved for an explicit ``gpu-smoke`` and requires ``cpu_ready`` AND
+``gpu_status=passed`` AND satisfied host prerequisites.  ``prepare`` is a
+CPU-only gate (``prepare_ok``): it never runs the GPU and never produces a
+``ready`` receipt.  Every report carries ``validator_version`` and an
+``evidence_identity`` so a cached GPU qualification is invalidated by any
+changed payload input.
 """
 
 import argparse
@@ -224,6 +231,12 @@ def build_prepare_report(manifest, inspector, workspace_env=None, probe_name=".p
 
     Creates and removes exactly one owned probe directory; never touches other
     files and never fixes permissions with a DAC bypass.
+
+    CPU-only success is reported as the additive ``prepare_ok`` field:
+    ``cpu_ready`` AND every host prerequisite satisfied (readable workspace plus
+    the passed write probe).  No GPU work happens here -- ``gpu_status`` stays
+    ``not_checked`` and the full ``ready`` receipt is reserved for an explicit
+    ``gpu-smoke``.
     """
     workspace = (workspace_env or inspector.env("PHOTOGRAM_WORKSPACE") or DEFAULT_WORKSPACE)
     report = build_doctor_report(manifest, inspector, workspace_env=workspace)
@@ -239,6 +252,9 @@ def build_prepare_report(manifest, inspector, workspace_env=None, probe_name=".p
         "ok": report["host_prerequisites"]["workspace_readable"] and write_ok,
     }
     report["ready"] = report["cpu_ready"] and report["gpu_status"] == "passed" and report["host_prerequisites"]["ok"]
+    # CPU-only success signal: prepare never runs the GPU, so `ready` can never
+    # be true here; `prepare_ok` gates the exit status instead.
+    report["prepare_ok"] = bool(report["cpu_ready"] and report["host_prerequisites"]["ok"])
     VALIDATOR.validate_doctor_report(report)
     return report
 
@@ -472,10 +488,11 @@ def _print(report, as_json):
         for check in report["checks"]:
             print(f"  [{'ok' if check['ok'] else 'FAIL'}] {check['name']}: {check['detail']}")
     if report["command"] == "prepare":
-        # prepare is a validation gate: exit nonzero unless the report is fully
-        # ready (it never runs the GPU smoke, so a prepare success is impossible
-        # until a separate explicit gpu-smoke passes).
-        return 0 if report["ready"] else 1
+        # prepare is a CPU-only validation gate: exit 0 iff the additive
+        # `prepare_ok` (cpu_ready AND all host prerequisites) is true, nonzero
+        # otherwise. It never runs the GPU smoke, so the full `ready` receipt
+        # stays reserved for an explicit gpu-smoke.
+        return 0 if report.get("prepare_ok") is True else 1
     return 0 if report["cpu_ready"] and report["gpu_status"] != "failed" else 1
 
 

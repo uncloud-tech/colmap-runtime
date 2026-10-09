@@ -146,26 +146,50 @@ class DoctorTests(unittest.TestCase):
         prepare_ok = TOOL.build_prepare_report(manifest, inspector, workspace_env="/work")
         self.assertEqual(prepare_ok["command"], "prepare")
         self.assertTrue(prepare_ok["host_prerequisites"]["workspace_uid_writable"])
+        self.assertTrue(prepare_ok["prepare_ok"])  # CPU-only prepare success
         self.assertFalse(prepare_ok["ready"])  # still no GPU smoke
         failing = FakeInspector(ldd={STOCK: healthy_ldd(), SEED: healthy_ldd()}, probe_write=False)
         prepare_fail = TOOL.build_prepare_report(manifest, failing, workspace_env="/work")
         self.assertFalse(prepare_fail["host_prerequisites"]["ok"])
+        self.assertFalse(prepare_fail["prepare_ok"])
 
-    def test_exit_semantics_prepare_gate_and_documented_doctor(self):
+    def test_exit_semantics_prepare_success_and_documented_doctor(self):
         manifest = fixture_manifest()
         healthy = FakeInspector(ldd={STOCK: healthy_ldd(), SEED: healthy_ldd()})
         # Documented: a cpu-ready doctor is informational and exits 0.
         doctor = TOOL.build_doctor_report(manifest, healthy, workspace_env="/work")
         self.assertTrue(doctor["cpu_ready"])
         self.assertEqual(self._exit(doctor), 0)
-        # prepare never runs the GPU smoke, so it never certifies ready -> nonzero.
+        # A healthy CPU-only prepare is a success (prepare_ok) and exits 0, but
+        # the full `ready` receipt stays reserved for an explicit gpu-smoke.
         prepare_ok = TOOL.build_prepare_report(manifest, healthy, workspace_env="/work")
-        self.assertEqual(self._exit(prepare_ok), 1)
+        self.assertTrue(prepare_ok["prepare_ok"])
+        self.assertFalse(prepare_ok["ready"])
+        self.assertEqual(self._exit(prepare_ok), 0)
         # The concrete defect: a failed write probe must not exit 0.
         failing = FakeInspector(ldd={STOCK: healthy_ldd(), SEED: healthy_ldd()}, probe_write=False)
         prepare_fail = TOOL.build_prepare_report(manifest, failing, workspace_env="/work")
+        self.assertFalse(prepare_fail["prepare_ok"])
         self.assertFalse(prepare_fail["host_prerequisites"]["ok"])
         self.assertEqual(self._exit(prepare_fail), 1)
+
+    def test_validator_requires_consistent_boolean_prepare_ok(self):
+        manifest = fixture_manifest()
+        inspector = FakeInspector(ldd={STOCK: healthy_ldd(), SEED: healthy_ldd()})
+        report = TOOL.build_prepare_report(manifest, inspector, workspace_env="/work")
+        VALIDATOR.validate_doctor_report(report)  # valid as built
+        missing = dict(report)
+        missing.pop("prepare_ok")
+        with self.assertRaises(VALIDATOR.ContractError):
+            VALIDATOR.validate_doctor_report(missing)
+        wrong_type = dict(report)
+        wrong_type["prepare_ok"] = 1
+        with self.assertRaises(VALIDATOR.ContractError):
+            VALIDATOR.validate_doctor_report(wrong_type)
+        inconsistent = dict(report)
+        inconsistent["prepare_ok"] = False
+        with self.assertRaises(VALIDATOR.ContractError):
+            VALIDATOR.validate_doctor_report(inconsistent)
 
     def test_prepare_report_is_validated_on_build(self):
         manifest = fixture_manifest()

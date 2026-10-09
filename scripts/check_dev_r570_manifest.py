@@ -9,12 +9,52 @@ itself and is therefore circular.  A host-side caller wraps the report with
 
 This module is the *independent* reader: it never trusts the in-image writer
 and fails closed on any drift from the commissioned identities.  It also
-validates the runtime doctor/gpu-smoke reports, whose readiness semantics are:
+validates the runtime doctor/prepare/gpu-smoke reports, whose readiness
+semantics are:
 
 * ``cpu_ready`` alone is never ``ready``;
 * ``gpu_status`` is ``not_checked`` unless an explicit ``gpu-smoke`` ran;
+* ``prepare`` never runs the GPU: its CPU-only success signal is the additive
+  boolean ``prepare_ok`` (``cpu_ready`` AND all host prerequisites satisfied),
+  which every prepare report MUST carry; ``ready`` stays reserved for an
+  explicit ``gpu-smoke``;
 * ``validator_version`` + ``evidence_identity`` prevent a cached GPU
   qualification from being reused after any payload input changes.
+
+``evidence_identity`` definition (the actual shipped computation):
+
+    sha256_hex(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+
+where ``json.dumps`` uses its default ``ensure_ascii=True`` (so non-ASCII is
+``\\uXXXX``-escaped), separators are the compact ``(",", ":")`` pair with no
+spaces, and the result is a lowercase hex64 sha256.  ``payload`` contains
+exactly these baked payload inputs, taken verbatim from the manifest:
+
+* ``base_image``         <- ``identity.base_image``
+* ``source_commit``      <- ``identity.source_commit``
+* ``source_tree``        <- ``identity.source_tree``
+* ``seed_patch_sha256``  <- ``seed_overlay.patch_sha256``
+* ``toolchain``          <- ``toolchain`` (the whole object)
+* ``controls``           <- ``{name: controls[name].sha256}`` for stock and seed
+* ``python_lock_sha256`` <- ``python.environment_lock_sha256``
+* ``cuda_architectures`` <- ``build.cuda_architectures``
+
+It deliberately EXCLUDES ``schema_version``, ``validator_version``, the
+``image`` name, and every field not listed above (notably
+``identity.source_archive_sha256``, ``dependencies``, ``mvs_evidence``,
+``gpu`` and ``harness_files`` are NOT hashed).  Do not treat the exclusion list
+as an include list: only the eight keys above enter the hash.
+
+``harness_files`` binds the deployed harness bytes.  It is a mapping whose keys
+are exactly the six ABSOLUTE in-image paths under ``/opt/photogram-dev`` and
+whose values are the lowercase hex64 sha256 of the actual in-image file bytes:
+
+* ``/opt/photogram-dev/photogram_dev.py``
+* ``/opt/photogram-dev/entrypoint.r570.sh``
+* ``/opt/photogram-dev/check_dev_r570_manifest.py``
+* ``/opt/photogram-dev/build-control.sh``
+* ``/opt/photogram-dev/gpu-probe/cuda_launch.cu``
+* ``/opt/photogram-dev/gpu-probe/driver_resolve.c``
 """
 
 import hashlib
@@ -314,6 +354,16 @@ def validate_doctor_report(report):
         raise ContractError("ready must require cpu_ready AND passed gpu AND host prerequisites")
     if report.get("command") == "doctor" and gpu_status != "not_checked":
         raise ContractError("the default doctor must report gpu_status=not_checked")
+    if report.get("command") == "prepare":
+        if not isinstance(report.get("prepare_ok"), bool):
+            raise ContractError("prepare report must carry a boolean prepare_ok")
+        expected_prepare_ok = (
+            report["cpu_ready"] and report["host_prerequisites"].get("ok") is True
+        )
+        if report["prepare_ok"] is not expected_prepare_ok:
+            raise ContractError(
+                "prepare_ok must equal cpu_ready AND all host prerequisites"
+            )
     return report
 
 
