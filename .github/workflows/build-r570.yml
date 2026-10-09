@@ -1,0 +1,88 @@
+name: Build r570 dev image
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish new immutable tag r570-cuda128-v1 (owner decision)'
+        type: boolean
+        default: false
+jobs:
+  build:
+    name: build_dev_image_r570
+    if: true
+    permissions:
+      contents: read
+      packages: write
+    runs-on: blacksmith-32vcpu-ubuntu-2404
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2.2.0
+        with:
+          cache-key: ${{ github.repository }}/r570
+          buildx-version: v0.37.2
+          platforms: linux/amd64
+          nofallback: true
+      - name: Acquire exact locked Python artifacts
+        run: |
+          set -euo pipefail
+          python3 -m dev.python.acquire --output dev/python/.staged/artifacts 2>&1 | tee reports/acquisition.log
+          sha256sum dev/python/.staged/artifacts/* > reports/acquired-sha256.txt
+      - name: Build r570 image (exact c6 stock + seed controls)
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          DOCKER_BUILDKIT=1 docker build --no-cache=false -f dev/Dockerfile.r570 \
+            -t colmap-dev:r570 --label org.uncloud.colmap.source.commit=c6ab4f897c94f10b15bdecc442dcfce4688f1b76 . \
+            2>&1 | tee reports/r570-build.log
+          test "${PIPESTATUS[0]}" = 0
+      - name: Capture baked manifest/controls/identity
+        run: |
+          set -euo pipefail
+          docker image inspect colmap-dev:r570 > reports/image-config.json
+          docker image inspect --format '{{.Id}}' colmap-dev:r570 > reports/image-id.txt
+          docker run --rm --entrypoint /bin/bash colmap-dev:r570 -c 'cat /opt/photogram-dev/manifest.json' > reports/image-manifest.json
+          sha256sum reports/image-manifest.json reports/image-id.txt > reports/identity-sha256.txt
+          python3 scripts/check_dev_r570_manifest.py --help >/dev/null
+          python3 scripts/check_dev_r570_manifest.py reports/image-manifest.json > reports/manifest-validation.log
+      - name: CPU in-container doctor and prepare
+        run: |
+          set -euo pipefail
+          WORK=$(mktemp -d)
+          for cmd in doctor prepare; do
+            docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
+              --user "$(id -u):$(id -g)" \
+              -e PHOTOGRAM_WORKSPACE="$WORK" \
+              -v "$WORK:$WORK" \
+              --entrypoint /opt/photogram-dev/entrypoint.r570.sh \
+              colmap-dev:r570 "$cmd" --json 2>&1 | tee "reports/${cmd}.log"
+          done
+      - name: Generate SBOM scan (non-blocking security finding capture)
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$(pwd):/scan" -w /scan \
+            aquasec/trivy:0.58.1 image --scanners vuln --format json --timeout 10m \
+            --output /scan/reports/vulnerabilities.json colmap-dev:r570 || true
+          test -s reports/vulnerabilities.json
+      - name: Retain evidence on failure or success
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: r570-image-evidence-${{ github.run_id }}
+          path: reports/*
+          retention-days: 90
+      - name: Publish exact image to NEW immutable tag (needs owner publish input)
+        if: inputs.publish
+        run: |
+          set -euo pipefail
+          tag=ghcr.io/uncloud-tech/colmap-runtime-dev:r570-cuda128-v1
+          docker tag colmap-dev:r570 "$tag"
+          printf '%s' "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker push "$tag"
+          docker inspect "$tag" --format '{{json .RepoDigests}}' > reports/pushed-digests.json
+      - name: Publish requires explicit non-default dispatch input
+        if: |
+          !inputs.publish
+        run: echo 'No dispatch publication (owner must choose publish:true)'; exit 0
