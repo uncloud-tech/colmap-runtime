@@ -1,9 +1,23 @@
-"""Bind the PR8 image contract to independent binary, CLI and default evidence."""
+"""Bind the PR8 image contract to independent binary, CLI and default evidence.
 
+Also carries an ADDITIVE validator for the R570 dev image
+(``dev/Dockerfile.r570``): when a directory contains ``manifest.json`` the
+R570 path is used; otherwise the original PR8 path is byte-for-byte unchanged.
+"""
+
+import importlib.util
 import json
 from pathlib import Path
 import re
 import sys
+
+
+def _load_r570_validator():
+    path = Path(__file__).with_name("check_dev_r570_manifest.py")
+    spec = importlib.util.spec_from_file_location("check_dev_r570_manifest", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def verify(directory):
@@ -63,8 +77,50 @@ def verify(directory):
     print(f"PASS: PR8 baked binary {binary_sha}; runtime sweep_tile; compact PRNG off")
 
 
+def verify_r570(directory):
+    """Validate the R570 manifest plus its contract-compatible BUILD-MANIFEST.txt."""
+    directory = Path(directory)
+    validator = _load_r570_validator()
+    manifest = json.loads((directory / "manifest.json").read_text())
+    validator.validate_manifest(manifest)
+    fields = {}
+    for line in (directory / "BUILD-MANIFEST.txt").read_text().splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            fields[key] = value
+    controls = manifest["controls"]
+    expected = {
+        "source_commit": manifest["identity"]["source_commit"],
+        "source_archive_sha256": manifest["identity"]["source_archive_sha256"],
+        "seed_patch_sha256": manifest["seed_overlay"]["patch_sha256"],
+        "binary_path": controls["stock"]["path"],
+        "binary_sha256": controls["stock"]["sha256"],
+        "seed_binary_path": controls["seed"]["path"],
+        "seed_binary_sha256": controls["seed"]["sha256"],
+        "cuda_architectures": manifest["build"]["cuda_architectures"],
+        "mvs_codegen_policy": manifest["mvs_evidence"]["policy"],
+        "gpu_execution_validated": "false",
+        "required_gpu_validation": manifest["gpu"]["required_gpu_validation"],
+        "environment_lock_sha256": manifest["python"]["environment_lock_sha256"],
+        "validator_version": str(manifest["validator_version"]),
+        "readiness_command": manifest["readiness"]["command"],
+    }
+    for key, value in expected.items():
+        if fields.get(key) != value:
+            raise ValueError(f"R570 BUILD-MANIFEST.txt disagrees with manifest: {key}")
+    print(
+        "PASS: R570 manifest binds stock "
+        f"{controls['stock']['sha256'][:12]} and seed {controls['seed']['sha256'][:12]}; "
+        "contract-compatible BUILD-MANIFEST.txt; no image self-identity"
+    )
+
+
 if __name__ == "__main__":
     try:
-        verify(sys.argv[1])
+        directory = Path(sys.argv[1])
+        if (directory / "manifest.json").is_file():
+            verify_r570(directory)
+        else:
+            verify(directory)
     except (ValueError, OSError, TypeError) as error:
         sys.exit(f"FAIL: {error}")

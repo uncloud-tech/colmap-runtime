@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# photogram-dev thin wrapper: resolves the in-image interpreter and execs the tool.
+set -euo pipefail
+PY=/opt/colmap-python/bin/python3.14
+[ -x "$PY" ] || PY=/usr/bin/python3
+exec "$PY" /opt/photogram-dev/photogram_dev.py "$@"

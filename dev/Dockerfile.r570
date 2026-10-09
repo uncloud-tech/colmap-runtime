@@ -1,0 +1,230 @@
+# Build context is the REPOSITORY ROOT (see .dockerignore): the recipe is
+# dev/Dockerfile.r570 and it also consumes scripts/ check helpers.
+# digest-pinned COMPLETE COLMAP development image (R570.195.03 / CUDA 12.8)
+#
+# Two named control toolchains are baked from the SAME c6 source with IDENTICAL
+# flags; the only difference is the minimal canonical seed overlay:
+#   /opt/colmap-stock  pristine c6ab4f897c94f10b15bdecc442dcfce4688f1b76
+#   /opt/colmap-seed   c6 + seed-minimal-d7ffb9c.patch (sha d6fe7c60...)
+#
+# Offline/reproducible model: ALL dependencies are acquired into the shared
+# immutable prefix /opt/deps in a NETWORK-ENABLED stage; both controls and the
+# Python closure are then installed with network disabled.
+#
+# Base is CUDA 12.8.1 / Ubuntu 24.04 (amd64, digest 4b9ed5fa...).  NOT 12.9:
+# the Blackwell (sm_120) path needs driver PTX-JIT and 12.9 PTX may exceed
+# driver 570.195.03's JIT support.  The upstream MVS Blackwell PTX workaround is
+# preserved: with "86-real;89-real;120-real;70-virtual" c6 emits native
+# sm_86/sm_89 SASS + compute_70/compute_90 PTX for MVS and drops sm_100+ from
+# that target.  No sm_120 MVS source-toggle patch is applied.
+#
+# The image NEVER records its own final OCI digest/imageID (that is circular);
+# the manifest binds source/toolchain/control/payload identities only, and a
+# host wraps the doctor report with `docker inspect` imageID + registry digest.
+ARG CUDA_BASE_IMAGE=nvidia/cuda:12.8.1-devel-ubuntu24.04@sha256:4b9ed5fa8361736996499f64ecebf25d4ec37ff56e4d11323ccde10aa36e0c43
+
+# ---------------------------------------------------------------------------
+# Stage: deps -- NETWORK-ENABLED acquisition of the exact pinned dependency set
+# ---------------------------------------------------------------------------
+FROM ${CUDA_BASE_IMAGE} AS deps
+ARG CUDA_BASE_IMAGE
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Exact upstream pins reused verbatim from the existing dev recipe.  No version
+# is changed in this iteration; a live-current-stable refresh is a separate task.
+ARG BOOST_VERSION=1.92.0
+ARG BOOST_SHA256=9bed76128d4e46755dbe818487788c6fceb6f72b378f4daa49b7e1e600d9088d
+ARG POSELIB_COMMIT=1bb8881f08e68f0b3d9b2ecc411fc15e7766ef1b
+ARG POSELIB_SHA256=ee46322581c7901fe24e91434eeec27163f820d481cba5faa43d37651fabc8e8
+ARG FAISS_VERSION=1.14.1
+ARG FAISS_SHA256=4b1ae7e7a0a46385b4084f0e3945623a15fcf99d793bf44d82aae8e24f11e5f5
+ARG GTEST_COMMIT=063de7e9578f82b369302001269680b4b1553359
+ARG GTEST_SHA256=623fe05d283020f37a579a8985ba338091ac7229da62b5591ff40acdf05b95e2
+
+# c6 source (canonical development base) + its Git tree identity.
+ARG COLMAP_COMMIT=c6ab4f897c94f10b15bdecc442dcfce4688f1b76
+ARG COLMAP_TREE=5488323854cd99a7d785ada78e4106cb44e3c518
+ARG SEED_PATCH_SHA256=d6fe7c609b18714940aa1d0b7c56318fda2fe8b809d4d4e20d2ced9dd3b7651e
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git cmake ninja-build build-essential ccache \
+        unzip xz-utils file gnupg jq pciutils lsb-release procps time pkg-config gzip \
+        libeigen3-dev libceres-dev libgoogle-glog-dev libgflags-dev libfreeimage-dev libmetis-dev \
+        libopenimageio-dev openimageio-tools libsqlite3-dev libcurl4-openssl-dev \
+        libssl-dev libglew-dev libgtest-dev libgmock-dev \
+        libopenblas-dev liblapack-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /usr/include/opencv4 /opt/deps /opt/src /opt/archives \
+              /opt/photogram-dev/evidence /opt/photogram-dev/patches /opt/photogram-dev/controls
+
+# ---- ACQUIRE + INSTALL pinned deps into the shared prefix /opt/deps (network) ----
+RUN set -eux; \
+    curl -fsSL "https://github.com/google/googletest/archive/${GTEST_COMMIT}.tar.gz" -o /tmp/gtest.tar.gz; \
+    echo "${GTEST_SHA256}  /tmp/gtest.tar.gz" | sha256sum -c -; \
+    mkdir -p /tmp/gtest-src; tar -xzf /tmp/gtest.tar.gz -C /tmp/gtest-src --strip-components=1; \
+    cmake -S /tmp/gtest-src -B /tmp/gtest-build -GNinja -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_CXX_STANDARD=17 -DCMAKE_INSTALL_PREFIX=/opt/deps -DBUILD_GMOCK=ON -DINSTALL_GTEST=ON; \
+    cmake --build /tmp/gtest-build -j"$(nproc)"; cmake --install /tmp/gtest-build; rm -rf /tmp/gtest-*; \
+    \
+    curl -fsSL "https://github.com/boostorg/boost/releases/download/boost-${BOOST_VERSION}/boost-${BOOST_VERSION}-cmake.tar.xz" -o /tmp/boost.tar.xz; \
+    echo "${BOOST_SHA256}  /tmp/boost.tar.xz" | sha256sum -c -; \
+    mkdir -p /tmp/boost-src; tar -xf /tmp/boost.tar.xz -C /tmp/boost-src --strip-components=1; \
+    cmake -S /tmp/boost-src -B /tmp/boost-build -GNinja -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX=/opt/deps \
+          -DBOOST_INCLUDE_LIBRARIES="graph;program_options;system;algorithm;container_hash;heap;preprocessor;property_map;property_tree;unordered;utility;asio;functional;next_prior;predef" \
+          -DBOOST_ENABLE_MPI=OFF -DBOOST_ENABLE_PYTHON=OFF -DBOOST_INSTALL_LAYOUT=system; \
+    cmake --build /tmp/boost-build -j"$(nproc)"; cmake --install /tmp/boost-build; rm -rf /tmp/boost-*; \
+    \
+    curl -fsSL "https://github.com/PoseLib/PoseLib/archive/${POSELIB_COMMIT}.zip" -o /tmp/poselib.zip; \
+    echo "${POSELIB_SHA256}  /tmp/poselib.zip" | sha256sum -c -; \
+    unzip -q /tmp/poselib.zip -d /tmp/poselib-src; \
+    cmake -S "/tmp/poselib-src/PoseLib-${POSELIB_COMMIT}" -B /tmp/poselib-build -GNinja \
+          -DCMAKE_BUILD_TYPE=Release -DMARCH_NATIVE=OFF -DCMAKE_INSTALL_PREFIX=/opt/deps; \
+    cmake --build /tmp/poselib-build -j"$(nproc)"; cmake --install /tmp/poselib-build; rm -rf /tmp/poselib-*; \
+    \
+    curl -fsSL "https://github.com/facebookresearch/faiss/archive/refs/tags/v${FAISS_VERSION}.zip" -o /tmp/faiss.zip; \
+    echo "${FAISS_SHA256}  /tmp/faiss.zip" | sha256sum -c -; \
+    unzip -q /tmp/faiss.zip -d /tmp/faiss-src; \
+    cmake -S "/tmp/faiss-src/faiss-${FAISS_VERSION}" -B /tmp/faiss-build -GNinja \
+          -DCMAKE_BUILD_TYPE=Release -DFAISS_ENABLE_GPU=OFF -DFAISS_ENABLE_PYTHON=OFF \
+          -DFAISS_ENABLE_MKL=OFF -DFAISS_OPT_LEVEL=dd -DBUILD_TESTING=OFF -DCMAKE_INSTALL_PREFIX=/opt/deps; \
+    cmake --build /tmp/faiss-build -j"$(nproc)"; cmake --install /tmp/faiss-build; rm -rf /tmp/faiss-*; \
+    \
+    printf '%s\n' /opt/deps/lib > /etc/ld.so.conf.d/colmap-deps.conf; \
+    ldconfig
+
+# ---- ACQUIRE the exact c6 source via git archive (network); record its SHA ----
+RUN set -eux; \
+    git init -q /opt/src/colmap-git; \
+    cd /opt/src/colmap-git; \
+    git remote add origin https://github.com/uncloud-tech/colmap; \
+    { git fetch -q --depth 1 origin "${COLMAP_COMMIT}" && git checkout -q FETCH_HEAD; } \
+      || { git fetch -q origin && git checkout -q "${COLMAP_COMMIT}"; }; \
+    test "$(git rev-parse HEAD^{tree})" = "${COLMAP_TREE}"; \
+    git archive --format=tar.gz --prefix=colmap-c6/ -o /opt/archives/colmap-c6.tar.gz HEAD; \
+    sha256sum /opt/archives/colmap-c6.tar.gz > /opt/photogram-dev/evidence/source-archive.sha256
+
+# ---------------------------------------------------------------------------
+# Stage: controls -- build BOTH named arms OFFLINE with identical flags
+# ---------------------------------------------------------------------------
+FROM deps AS controls
+ARG CUDA_BASE_IMAGE
+ARG COLMAP_COMMIT
+ARG COLMAP_TREE
+ARG SEED_PATCH_SHA256
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+COPY dev/build-control.sh /opt/photogram-dev/build-control.sh
+COPY dev/patches/seed-minimal-d7ffb9c.patch /opt/photogram-dev/patches/seed-minimal-d7ffb9c.patch
+
+RUN --network=none set -eux; \
+    test "$(sha256sum /opt/photogram-dev/patches/seed-minimal-d7ffb9c.patch | awk '{print $1}')" = "${SEED_PATCH_SHA256}"; \
+    ARCHIVE=/opt/archives/colmap-c6.tar.gz; \
+    ARCHIVE_SHA="$(awk '{print $1}' /opt/photogram-dev/evidence/source-archive.sha256)"; \
+    bash /opt/photogram-dev/build-control.sh stock "$ARCHIVE" "$ARCHIVE_SHA"; \
+    bash /opt/photogram-dev/build-control.sh seed "$ARCHIVE" "$ARCHIVE_SHA" \
+        /opt/photogram-dev/patches/seed-minimal-d7ffb9c.patch "${SEED_PATCH_SHA256}"; \
+    { echo "nvcc=$(nvcc --version | awk '/release/ {print $5}' | tr -d ',')"; \
+      echo "cuda=$(nvcc --version | awk '/release/ {print $5}' | cut -d, -f1 | cut -d. -f1-2)"; \
+      echo "gcc=$(gcc -dumpfullversion)"; \
+      echo "cmake=$(cmake --version | head -1 | awk '{print $3}')"; \
+      echo "ninja=$(ninja --version)"; \
+      echo "python=3.14.7"; \
+    } > /opt/photogram-dev/evidence/toolchain.txt
+
+# ---------------------------------------------------------------------------
+# Stage: python -- exact locked CPython 3.14.7 + pip 26.2.1 closure, OFFLINE
+# ---------------------------------------------------------------------------
+# The .staged/artifacts directory is produced by the existing dev/python
+# acquisition pipeline (acquire.py) and hash-verified here before extraction.
+FROM deps AS python
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG ENVIRONMENT_LOCK_SHA256=a22ac04ee8febc9f46f281d7b01d200e73e75f2d380bbc02b0bffc4992ee45cd
+ARG CPYTHON_ARCHIVE=cpython-3.14.7+20260924-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz
+ARG CPYTHON_SHA256=bd0d0568ccded07bbf1c87727230dc5dd0187e706a87da23c4de78388a229b78
+COPY dev/python/environment-lock.json /opt/colmap-python/environment-lock.json
+COPY dev/python/requirements.lock /opt/colmap-python/requirements.lock
+COPY dev/python/install_locked.py /opt/colmap-python/install_locked.py
+COPY dev/python/.staged/artifacts/ /input/
+RUN --network=none set -eux; \
+    test "$(sha256sum /opt/colmap-python/environment-lock.json | awk '{print $1}')" = "${ENVIRONMENT_LOCK_SHA256}"; \
+    printf '%s  /input/%s\n' "${CPYTHON_SHA256}" "${CPYTHON_ARCHIVE}" > /tmp/cpython.sha256; \
+    sha256sum -c /tmp/cpython.sha256; \
+    tar --no-same-owner -xzf "/input/${CPYTHON_ARCHIVE}" --strip-components=1 -C /opt/colmap-python; \
+    /opt/colmap-python/bin/python3.14 -E -s -B /opt/colmap-python/install_locked.py \
+        --artifacts /input \
+        --lock /opt/colmap-python/environment-lock.json \
+        --requirements /opt/colmap-python/requirements.lock; \
+    /opt/colmap-python/bin/python3.14 -E -s -B -c "import numpy, scipy, matplotlib, pycolmap, PIL, contourpy, kiwisolver, cycler, fontTools"; \
+    rm -rf /tmp/cpython.sha256
+
+# ---------------------------------------------------------------------------
+# Stage: dev-r570 -- assemble the final image, harness, manifest and entrypoint
+# ---------------------------------------------------------------------------
+FROM controls AS dev-r570
+ARG CUDA_BASE_IMAGE
+ARG COLMAP_COMMIT
+ARG COLMAP_TREE
+ARG SEED_PATCH_SHA256
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+COPY --from=python /opt/colmap-python /opt/colmap-python
+
+# Harness + manifest tooling (small, no speculative frameworks).
+COPY dev/photogram_dev.py dev/generate_manifest.py /opt/photogram-dev/
+COPY scripts/check_dev_r570_manifest.py /opt/photogram-dev/check_dev_r570_manifest.py
+COPY dev/gpu_probe/ /opt/photogram-dev/gpu-probe/
+COPY dev/photogram-dev /usr/local/bin/photogram-dev
+COPY dev/entrypoint.r570.sh /opt/photogram-dev/entrypoint.r570.sh
+COPY dev/python/requirements.lock /opt/photogram-dev/evidence/python-requirements.lock
+
+# Entry-point control identity records (checked before any governed run).
+RUN set -eux; \
+    cp /opt/photogram-dev/evidence/stock/binary.sha256 /opt/photogram-dev/controls/stock.sha256; \
+    cp /opt/photogram-dev/evidence/seed/binary.sha256 /opt/photogram-dev/controls/seed.sha256; \
+    ln -s /opt/colmap-python/bin/python3.14 /usr/local/bin/python; \
+    ln -s /opt/colmap-python/bin/python3.14 /usr/local/bin/python3; \
+    chmod +x /opt/photogram-dev/build-control.sh /opt/photogram-dev/entrypoint.r570.sh /usr/local/bin/photogram-dev
+
+# Compose the manifest (validated) and the contract-compatible BUILD-MANIFEST.txt.
+RUN set -eux; \
+    /opt/colmap-python/bin/python3.14 -E -s -B /opt/photogram-dev/generate_manifest.py \
+        --evidence /opt/photogram-dev/evidence \
+        --out /opt/photogram-dev/manifest.json; \
+    STOCK_SHA="$(awk '{print $1}' /opt/photogram-dev/evidence/stock/binary.sha256)"; \
+    SEED_SHA="$(awk '{print $1}' /opt/photogram-dev/evidence/seed/binary.sha256)"; \
+    ARCHIVE_SHA="$(awk '{print $1}' /opt/photogram-dev/evidence/source-archive.sha256)"; \
+    mkdir -p /opt/colmap-dev; \
+    { echo "image=colmap-dev-r570"; \
+      echo "source_repo=https://github.com/uncloud-tech/colmap"; \
+      echo "base_image=${CUDA_BASE_IMAGE}"; \
+      echo "source_commit=${COLMAP_COMMIT}"; \
+      echo "source_tree=${COLMAP_TREE}"; \
+      echo "source_archive_sha256=${ARCHIVE_SHA}"; \
+      echo "seed_patch_sha256=${SEED_PATCH_SHA256}"; \
+      echo "binary_path=/opt/colmap-stock/bin/colmap"; \
+      echo "binary_sha256=${STOCK_SHA}"; \
+      echo "seed_binary_path=/opt/colmap-seed/bin/colmap"; \
+      echo "seed_binary_sha256=${SEED_SHA}"; \
+      echo "cuda_architectures=86-real;89-real;120-real;70-virtual"; \
+      echo "mvs_cuda_architectures=sm_86;sm_89;compute_70;compute_90"; \
+      echo "mvs_codegen_policy=upstream_blackwell_ptx_workaround_preserved"; \
+      echo "gpu_execution_validated=false"; \
+      echo "byte_exactness_inherited=false"; \
+      echo "required_gpu_validation=fresh_reference_map_gate"; \
+      echo "dep_prefix=/opt/deps"; \
+      echo "python_prefix=/opt/colmap-python"; \
+      echo "python_interpreter=3.14.7"; \
+      echo "python_pip=26.2.1"; \
+      echo "environment_lock_sha256=a22ac04ee8febc9f46f281d7b01d200e73e75f2d380bbc02b0bffc4992ee45cd"; \
+      echo "validator_version=1"; \
+      echo "readiness_command=photogram-dev doctor"; \
+    } > /opt/colmap-dev/BUILD-MANIFEST.txt
+
+RUN chmod -R a+rX /opt/colmap-stock /opt/colmap-seed /opt/colmap-python /opt/deps \
+        /opt/src /opt/archives /opt/photogram-dev
+
+ENV COLMAP_PATCH_MATCH_COMPACT_PRNG=0
+LABEL org.opencontainers.image.description="COMPLETE COLMAP dev image R570.195.03/CUDA12.8: stock+seed controls, locked Python, offline doctor"
+LABEL org.uncloud.colmap.source.commit="${COLMAP_COMMIT}"
+ENTRYPOINT ["/opt/photogram-dev/entrypoint.r570.sh"]

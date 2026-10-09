@@ -4,3 +4,6 @@ __pycache__/
 *.key
 *.pem
 reports/
+# Staged upstream artifacts for the Python closure: produced by the existing
+# acquire pipeline, never committed (hundreds of MB of third-party bytes).
+dev/python/.staged/

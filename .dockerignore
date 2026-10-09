@@ -1,0 +1,8 @@
+# Build context for dev/Dockerfile.r570 (repository-root context).
+# Everything is excluded except the recipe inputs; the large Python artifacts
+# under dev/python/.staged are staged by the existing acquire pipeline.
+**
+!dev
+!dev/**
+!scripts
+!scripts/check_dev_r570_manifest.py

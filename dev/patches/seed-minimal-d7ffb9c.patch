@@ -1,0 +1,192 @@
+diff --git a/src/colmap/controllers/option_manager.cc b/src/colmap/controllers/option_manager.cc
+index a68c72b..10d37bc 100644
+--- a/src/colmap/controllers/option_manager.cc
++++ b/src/colmap/controllers/option_manager.cc
+@@ -1035,6 +1035,9 @@ void OptionManager::AddPatchMatchStereoOptions() {
+                    &patch_match_stereo->allow_missing_files);
+   AddDefaultOption("PatchMatchStereo.write_consistency_graph",
+                    &patch_match_stereo->write_consistency_graph);
++  // Benchmark-only: -1 keeps the historical seeding; >= 0 seeds each pixel from
++  // (seed, row, col) for cross-machine reproducibility. Not for production runs.
++  AddDefaultOption("PatchMatchStereo.random_seed", &patch_match_stereo->random_seed);
+   AddDefaultOption("PatchMatchStereo.num_threads",
+                    &patch_match_stereo->num_threads);
+ }
+diff --git a/src/colmap/mvs/benchmark_seed.h b/src/colmap/mvs/benchmark_seed.h
+new file mode 100644
+index 0000000..c25cf04
+--- /dev/null
++++ b/src/colmap/mvs/benchmark_seed.h
+@@ -0,0 +1,55 @@
++// SPDX-License-Identifier: BSD-3-Clause
++
++// Benchmark-only deterministic seeding for patch-match stereo.
++//
++// The stock seeding derives each pixel's cuRAND state from the launch geometry
++// (blockIdx/blockDim/threadIdx). That makes a pixel's random stream depend on the
++// kernel launch configuration, which changes with the sweep tile and, on the
++// experimental auto path, with the device's SM count. Reproducibility across
++// machines therefore cannot be guaranteed with the stock behaviour.
++//
++// This helper derives the seed from the PIXEL COORDINATE (and an explicit user
++// seed) instead, so the random stream of a pixel is a pure function of
++// (seed, row, col) independent of tile, launch geometry, device and MPS state.
++//
++// Scope: benchmark reproducibility only. Production runs must leave
++// PatchMatchOptions::random_seed at its default (-1), which preserves the
++// historical seeding exactly.
++#pragma once
++
++#include <cstdint>
++
++namespace colmap {
++namespace mvs {
++#if defined(__CUDACC__) || defined(__HIPCC__)
++#define COLMAP_BENCHMARK_SEED_HD __host__ __device__
++#else
++#define COLMAP_BENCHMARK_SEED_HD
++#endif
++
++namespace benchmark_seed {
++
++// splitmix64 finalizer: cheap, well-mixed, and identical on host and device.
++COLMAP_BENCHMARK_SEED_HD inline uint64_t Mix(const uint64_t value) {
++  uint64_t x = value + 0x9E3779B97F4A7C15ull;
++  x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
++  x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
++  return x ^ (x >> 31);
++}
++
++// Seed for one pixel. `row`/`col` are the coordinates in the reference image
++// (after the current 90-degree rotation, as the caller indexes the state map).
++COLMAP_BENCHMARK_SEED_HD inline uint64_t PixelSeed(const int64_t seed,
++                                                  const int64_t row,
++                                                  const int64_t col) {
++  const uint64_t coordinate =
++      (static_cast<uint64_t>(static_cast<uint32_t>(col)) << 32) ^
++      static_cast<uint64_t>(static_cast<uint32_t>(row));
++  return Mix(Mix(static_cast<uint64_t>(seed)) ^ coordinate);
++}
++
++}  // namespace benchmark_seed
++}  // namespace mvs
++}  // namespace colmap
++
++#undef COLMAP_BENCHMARK_SEED_HD
+diff --git a/src/colmap/mvs/gpu_mat_prng.cu b/src/colmap/mvs/gpu_mat_prng.cu
+index 52f2464..21451bc 100644
+--- a/src/colmap/mvs/gpu_mat_prng.cu
++++ b/src/colmap/mvs/gpu_mat_prng.cu
+@@ -2,6 +2,8 @@
+ 
+ #include "colmap/mvs/gpu_mat_prng.h"
+ 
++#include "colmap/mvs/benchmark_seed.h"
++
+ namespace colmap {
+ namespace mvs {
+ namespace {
+@@ -20,11 +22,27 @@ __global__ void InitRandomStateKernel(GpuMatView<curandState> output) {
+   }
+ }
+ 
++// Benchmark-only: pixel-coordinate seeding, independent of the launch geometry.
++__global__ void InitRandomStateFromSeedKernel(GpuMatView<curandState> output,
++                                              const int64_t random_seed) {
++  const size_t row = blockIdx.y * blockDim.y + threadIdx.y;
++  const size_t col = blockIdx.x * blockDim.x + threadIdx.x;
++  if (col < output.GetWidth() && row < output.GetHeight()) {
++    curand_init(benchmark_seed::PixelSeed(
++                    random_seed, static_cast<int64_t>(row), static_cast<int64_t>(col)),
++                0, 0, &output.GetRef(row, col));
++  }
++}
++
+ }  // namespace
+ 
+-GpuMatPRNG::GpuMatPRNG(const int width, const int height)
++GpuMatPRNG::GpuMatPRNG(const int width, const int height, const int random_seed)
+     : GpuMat(width, height) {
+-  InitRandomStateKernel<<<gridSize_, blockSize_>>>(View());
++  if (random_seed < 0) {
++    InitRandomStateKernel<<<gridSize_, blockSize_>>>(View());
++  } else {
++    InitRandomStateFromSeedKernel<<<gridSize_, blockSize_>>>(View(), random_seed);
++  }
+ }
+ 
+ }  // namespace mvs
+diff --git a/src/colmap/mvs/gpu_mat_prng.h b/src/colmap/mvs/gpu_mat_prng.h
+index 7ceebfc..51389f4 100644
+--- a/src/colmap/mvs/gpu_mat_prng.h
++++ b/src/colmap/mvs/gpu_mat_prng.h
+@@ -9,7 +9,9 @@ namespace mvs {
+ 
+ class GpuMatPRNG : public GpuMat<curandState> {
+  public:
+-  GpuMatPRNG(const int width, const int height);
++  // random_seed < 0 keeps the historical launch-geometry seeding; >= 0 seeds each
++  // pixel from (random_seed, row, col). Benchmark reproducibility only.
++  GpuMatPRNG(const int width, const int height, const int random_seed = -1);
+ 
+  private:
+   void InitRandomState();
+diff --git a/src/colmap/mvs/patch_match_cuda.cu b/src/colmap/mvs/patch_match_cuda.cu
+index 2ea00d4..ad2480c 100644
+--- a/src/colmap/mvs/patch_match_cuda.cu
++++ b/src/colmap/mvs/patch_match_cuda.cu
+@@ -1792,7 +1792,8 @@ void PatchMatchCuda::InitTransforms() {
+ }
+ 
+ void PatchMatchCuda::InitWorkspaceMemory() {
+-  rand_state_map_ = std::make_unique<GpuMatPRNG>(ref_width_, ref_height_);
++  rand_state_map_ = std::make_unique<GpuMatPRNG>(
++      ref_width_, ref_height_, options_.random_seed);
+ 
+   depth_map_ = std::make_unique<GpuMat<float>>(ref_width_, ref_height_);
+   if (options_.geom_consistency) {
+@@ -1856,7 +1857,7 @@ void PatchMatchCuda::Rotate() {
+   // Rotate random map.
+   {
+     std::unique_ptr<GpuMatPRNG> rotated_rand_state_map(
+-        new GpuMatPRNG(width, height));
++        new GpuMatPRNG(width, height, options_.random_seed));
+     rand_state_map_->Rotate(rotated_rand_state_map.get());
+     rand_state_map_.swap(rotated_rand_state_map);
+   }
+diff --git a/src/colmap/mvs/patch_match_options.cc b/src/colmap/mvs/patch_match_options.cc
+index e289d5e..2d608eb 100644
+--- a/src/colmap/mvs/patch_match_options.cc
++++ b/src/colmap/mvs/patch_match_options.cc
+@@ -39,6 +39,7 @@ void PatchMatchOptions::Print() const {
+   PrintOption(filter_min_num_consistent);
+   PrintOption(filter_geom_consistency_max_cost);
+   PrintOption(write_consistency_graph);
++  PrintOption(random_seed);
+   PrintOption(allow_missing_files);
+   PrintOption(num_threads);
+ }
+@@ -47,6 +48,7 @@ bool PatchMatchOptions::Check() const {
+   if (depth_min != -1.0f || depth_max != -1.0f) {
+     CHECK_OPTION_IN(depth_min, 0.0f, depth_max);
+   }
++  CHECK_OPTION_GE(random_seed, -1);
+   CHECK_OPTION_LE(window_radius, static_cast<int>(kMaxPatchMatchWindowRadius));
+   CHECK_OPTION_GT(sigma_color, 0.0f);
+   CHECK_OPTION_GT(window_radius, 0);
+diff --git a/src/colmap/mvs/patch_match_options.h b/src/colmap/mvs/patch_match_options.h
+index 75c9655..505388f 100644
+--- a/src/colmap/mvs/patch_match_options.h
++++ b/src/colmap/mvs/patch_match_options.h
+@@ -57,6 +57,11 @@ struct PatchMatchOptions {
+   // Maximum image size in either dimension.
+   int max_image_size = -1;
+ 
++  // Benchmark-only deterministic seeding of the patch-match random sampler.
++  // -1 preserves the historical launch-geometry seeding exactly (production default).
++  // >= 0 derives every pixel's cuRAND state from (random_seed, row, col).
++  int random_seed = -1;
++
+   // Half window size to compute NCC photo-consistency cost.
+   int window_radius = 5;
+ 
