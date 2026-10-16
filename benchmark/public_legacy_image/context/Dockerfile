@@ -18,7 +18,9 @@ ARG BASE
 # Keep proven root SSH/on-start service behavior. Job is staged/executed by the
 # existing launcher, NOT Docker ENTRYPOINT (Vast SSH overrides it anyway).
 USER 0:0
-COPY --from=transport-build /opt/benchmark-node /opt/benchmark-node
+# Runtime needs Node, not npm/npx or their CLI dependency tree.
+COPY --from=transport-build /opt/benchmark-node/bin/node /opt/benchmark-node/bin/node
+COPY --from=transport-build /opt/benchmark-node/LICENSE /opt/benchmark-node/LICENSE
 COPY --from=transport-build /client/node_modules /opt/benchmark-transport/node_modules
 COPY --chmod=0644 common.ts submit.ts legacy_submit.py verify_image.py LICENSE /opt/benchmark-transport/
 RUN printf '%s\n' "$BASE" > /opt/benchmark-transport/carrier-image-ref

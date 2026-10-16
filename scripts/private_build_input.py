@@ -74,12 +74,12 @@ def prepare_oci(archive,out):
   if type(layer['size']) is not int or (out/'blobs/sha256'/layer['digest'][7:]).stat().st_size!=layer['size']:raise ValueError('layer byte mismatch')
  return {'manifest_digest':digest,'config_digest':config,'complete_oci_archive_bytes':size}
 
-def safe_proof(doctor,expanded,published):
+def safe_proof(doctor,expanded,published=None):
  def read_json(path):
   with Path(path).open('rb') as stream:raw=stream.read(131073)
   if len(raw)>131072:raise ValueError('proof byte cap')
   return json.loads(raw)
- d=read_json(doctor);p=read_json(published)
+ d=read_json(doctor);p=read_json(published) if published is not None else None
  expected={'python_version':'3.14.7','pycolmap_version':'4.2.0','node_version':'v24.22.0','cuda_execution':'NOT_RUN'}
  if any(d.get(k)!=v for k,v in expected.items()) or d.get('native_science_rebuilt') is not False or d.get('private_fixed_seed0_equivalence') is not False:raise ValueError('CPU proof identity')
  base='ghcr.io/bu5hm4nn/colmap-runtime@sha256:fc9e5c3ef7685da3e2d0d09cf6e2afe6e3e9d047b6d5fd2610cce9d3c9af2fe4'
@@ -88,12 +88,26 @@ def safe_proof(doctor,expanded,published):
  if set(hashes)!=set(names.values()) or any(not isinstance(v,str) or not re.fullmatch('[0-9a-f]{64}',v) for v in hashes.values()):raise ValueError('CPU proof hashes')
  size=Path(expanded).read_text()
  if not re.fullmatch('[0-9]{1,12}\\n?',size) or not 0<int(size)<=64*1024**3:raise ValueError('image size proof')
- digest=p['containerimage.digest']
- if not isinstance(digest,str) or not re.fullmatch('sha256:[0-9a-f]{64}',digest):raise ValueError('published proof digest')
+ digest=p['containerimage.digest'] if p is not None else None
+ if p is not None and (not isinstance(digest,str) or not re.fullmatch('sha256:[0-9a-f]{64}',digest)):raise ValueError('published proof digest')
  carrier=d.get('carrier_image_ref')
  if carrier is not None and (not isinstance(carrier,str) or not re.fullmatch(r'ghcr\.io/uncloud-tech/colmap-runtime@sha256:[a-f0-9]{64}',carrier)):raise ValueError('carrier proof identity')
  # Construct the complete output: never forward documents, logs, paths or unknown fields.
  return {'stage':'base','status':'cpu_api_passed','software':{k:d[k] for k in ('python_version','pycolmap_version','node_version')},'native_payload_digest':base.split('@')[1],'carrier_image_digest':carrier.split('@')[1] if carrier else None,**{k:hashes[v] for k,v in names.items()},'expanded_image_bytes':int(size),'published_digest':digest,'passed_cpu_checks':['legacy_identity','installer_free_verifier','patchmatch_api','fusion_api','host_seed_api','node_module','sender_v2_abi'],'gpu_execution_validated':False}
+
+def security_summary(path):
+ with Path(path).open('rb') as stream:raw=stream.read(32*1024**2+1)
+ if len(raw)>32*1024**2:raise ValueError('security report cap')
+ report=json.loads(raw);rows=[]
+ for result in report.get('Results',[]):
+  for v in result.get('Vulnerabilities') or []:
+   if v.get('Severity') not in ('HIGH','CRITICAL'):continue
+   row={}
+   for out,key in [('id','VulnerabilityID'),('package','PkgName'),('installed','InstalledVersion'),('fixed','FixedVersion'),('severity','Severity')]:
+    value=v.get(key,'');row[out]=value if isinstance(value,str) and re.fullmatch(r'[A-Za-z0-9@._+:/, <>=~^*-]{0,200}',value) else '<invalid>'
+   rows.append(row)
+   if len(rows)>512:raise ValueError('security summary row cap')
+ return {'stage':'security','high_critical_findings':rows}
 
 def registry_check(digest):
  import urllib.request,urllib.error
@@ -114,15 +128,17 @@ def registry_check(digest):
  else:raise ValueError('anonymous package read unexpectedly allowed')
 
 def main():
- p=argparse.ArgumentParser();s=p.add_subparsers(dest='mode',required=True);a=s.add_parser('pack');a.add_argument('context',type=Path);a.add_argument('out',type=Path);a=s.add_parser('unpack');a.add_argument('sha256');a.add_argument('out',type=Path);a=s.add_parser('registry-check');a.add_argument('digest');a=s.add_parser('proof');a.add_argument('doctor',type=Path);a.add_argument('expanded',type=Path);a.add_argument('published',type=Path);a=s.add_parser('oci-check');a.add_argument('archive',type=Path);a.add_argument('out',type=Path);a=p.parse_args()
+ p=argparse.ArgumentParser();s=p.add_subparsers(dest='mode',required=True);a=s.add_parser('pack');a.add_argument('context',type=Path);a.add_argument('out',type=Path);a=s.add_parser('unpack');a.add_argument('sha256');a.add_argument('out',type=Path);a=s.add_parser('registry-check');a.add_argument('digest');a=s.add_parser('proof');a.add_argument('doctor',type=Path);a.add_argument('expanded',type=Path);a.add_argument('published',type=Path);a=s.add_parser('cpu-proof');a.add_argument('doctor',type=Path);a.add_argument('expanded',type=Path);a=s.add_parser('security-summary');a.add_argument('report',type=Path);a=s.add_parser('oci-check');a.add_argument('archive',type=Path);a.add_argument('out',type=Path);a=p.parse_args()
  if a.mode=='pack':print(json.dumps(pack(a.context,a.out)))
  elif a.mode=='unpack':unpack((os.environ.get('PRIVATE_CONTEXT_1','')+os.environ.get('PRIVATE_CONTEXT_2','')).encode(),a.sha256,a.out)
  elif a.mode=='oci-check':print(json.dumps(prepare_oci(a.archive,a.out)))
  elif a.mode=='proof':print(json.dumps(safe_proof(a.doctor,a.expanded,a.published),sort_keys=True))
+ elif a.mode=='cpu-proof':print(json.dumps(safe_proof(a.doctor,a.expanded),sort_keys=True))
+ elif a.mode=='security-summary':print(json.dumps(security_summary(a.report),sort_keys=True))
  else:registry_check(a.digest)
 if __name__=='__main__':
  try:main()
  except Exception:
-  if len(sys.argv)>1 and sys.argv[1]=='proof':print('{"stage":"proof","status":"failed","code":"SAFE_PROOF_REJECTED"}')
+  if len(sys.argv)>1 and sys.argv[1] in ('proof','cpu-proof','security-summary'):print('{"stage":"proof","status":"failed","code":"SAFE_PROOF_REJECTED"}')
   else:print('private context rejected; no input details logged',file=sys.stderr)
   raise SystemExit(2)

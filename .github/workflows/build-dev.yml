@@ -299,6 +299,7 @@ jobs:
           test "$(docker image inspect public-base:one --format '{{.Id}}')" = "$config"
           docker run --rm --network none --entrypoint /opt/colmap-runtime/python/bin/python3.14 public-base:one /opt/benchmark-transport/verify_image.py > "$RUNNER_TEMP/public-cpu-doctor.json"
           docker image inspect public-base:one --format '{{.Size}}' > "$RUNNER_TEMP/public-expanded-bytes"
+          python3 scripts/private_build_input.py cpu-proof "$RUNNER_TEMP/public-cpu-doctor.json" "$RUNNER_TEMP/public-expanded-bytes" > "$RUNNER_TEMP/public-cpu-proof.json"
           docker save public-base:one -o "$RUNNER_TEMP/public-layer-audit.tar"
           python3 scripts/audit_image.py "$RUNNER_TEMP/public-layer-audit.tar"
           rm "$RUNNER_TEMP/public-layer-audit.tar"
@@ -316,7 +317,9 @@ jobs:
           cache: false
       - name: Enforce current security policy before public publication
         if: inputs.private_stage == 'public-base'
-        run: python3 scripts/check_security.py "$RUNNER_TEMP/public-vulnerabilities.json"
+        run: |
+          python3 scripts/private_build_input.py security-summary "$RUNNER_TEMP/public-vulnerabilities.json"
+          python3 scripts/check_security.py "$RUNNER_TEMP/public-vulnerabilities.json"
       - name: Publish only inspected credential-free public candidate
         if: inputs.private_stage == 'public-base' && inputs.publish
         shell: bash
@@ -331,6 +334,18 @@ jobs:
           published=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["containerimage.digest"])' "$RUNNER_TEMP/public-published.json")
           test "$published" = "$manifest"
           python3 scripts/private_build_input.py proof "$RUNNER_TEMP/public-cpu-doctor.json" "$RUNNER_TEMP/public-expanded-bytes" "$RUNNER_TEMP/public-published.json"
+      - name: Retain allowlisted public validation evidence even on failure
+        if: always() && inputs.private_stage == 'public-base'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # existing v7.0.1 pin
+        with:
+          name: public-transport-evidence-${{ github.run_id }}
+          retention-days: 3
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/public-vulnerabilities.json
+            ${{ runner.temp }}/public-cpu-proof.json
+            ${{ runner.temp }}/public-expanded-bytes
+            ${{ runner.temp }}/public-oci-binding.json
       - name: Remove ephemeral sensitive workspace and registry auth
         if: always()
         shell: bash

@@ -11,6 +11,9 @@ class SafeProofTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as temp:
    d,paths=self.inputs(Path(temp));out=safe_proof(*paths);encoded=json.dumps(out)
    self.assertNotIn('DO_NOT_EMIT',encoded);self.assertNotIn(temp,encoded);self.assertNotIn('python/bin',encoded);self.assertEqual(out['expanded_image_bytes'],12345);self.assertFalse(out['gpu_execution_validated']);self.assertEqual(out['status'],'cpu_api_passed')
+ def test_cpu_evidence_before_publication_does_not_fabricate_published_digest(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   d,paths=self.inputs(Path(tmp));out=safe_proof(paths[0],paths[1]);self.assertIsNone(out['published_digest']);self.assertEqual(out['status'],'cpu_api_passed')
  def test_corrected_carrier_is_not_mislabeled_as_original_payload_image(self):
   with tempfile.TemporaryDirectory() as temp:
    d,paths=self.inputs(Path(temp));d['native_payload_source_image']=d.pop('base_image');d['carrier_image_ref']='ghcr.io/uncloud-tech/colmap-runtime@sha256:'+'c'*64;paths[0].write_text(json.dumps(d));out=safe_proof(*paths)
