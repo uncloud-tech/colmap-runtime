@@ -7,6 +7,22 @@ name: Build dev image (PR#8 memory stack)
 on:
   workflow_dispatch:
     inputs:
+      specialization:
+        description: Existing dev flow or private runtime specialization
+        type: choice
+        options: [dev, benchmark]
+        default: dev
+      private_stage:
+        description: Non-sensitive ACL check first; private inputs only after that succeeds
+        type: choice
+        options: [acl-check, base, cap]
+        default: acl-check
+      context_sha256:
+        description: SHA256 of bounded private gzip context (never secret contents)
+        type: string
+      package_probe_digest:
+        description: Previously verified non-sensitive private package manifest digest
+        type: string
       publish:
         description: Publish disposable experimental image (approved header exception; no production data)
         type: boolean
@@ -21,7 +37,7 @@ concurrency:
 
 jobs:
   r570:
-    if: github.ref == 'refs/heads/ci/r570-cuda128-dev-image'
+    if: github.ref == 'refs/heads/ci/r570-cuda128-dev-image' && inputs.specialization != 'benchmark'
     permissions:
       contents: read
       packages: write
@@ -30,7 +46,7 @@ jobs:
       publish: ${{ inputs.publish }}
     secrets: inherit
   build:
-    if: github.ref != 'refs/heads/ci/r570-cuda128-dev-image'
+    if: github.ref != 'refs/heads/ci/r570-cuda128-dev-image' && inputs.specialization != 'benchmark'
     permissions:
       contents: read
       packages: write
@@ -150,3 +166,110 @@ jobs:
           path: reports/
           if-no-files-found: warn
           retention-days: 14
+  specialization:
+    if: inputs.specialization == 'benchmark' && github.ref == 'refs/heads/ci/benchmark-specialization'
+    runs-on: ${{ inputs.private_stage == 'base' && 'blacksmith-32vcpu-ubuntu-2404' || 'blacksmith-4vcpu-ubuntu-2404' }}
+    timeout-minutes: ${{ inputs.private_stage == 'base' && 30 || 5 }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # Ephemeral local builder, NOT Blacksmith's paid sticky-cache action.
+      # Live stable action4.4.1/BuildKit0.34.0 verified official2026-10-16;
+      # Buildx0.37.2 is the existing project's reproducibility pin.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+        with:
+          version: v0.37.2
+          driver: docker-container
+          driver-opts: image=moby/buildkit@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+          cache-binary: false
+      - name: Private registry authentication (no persisted checkout credentials)
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          test '${{ runner.environment }}' = self-hosted
+          export DOCKER_CONFIG="$RUNNER_TEMP/registry-auth"
+          mkdir -m700 "$DOCKER_CONFIG"
+          echo "DOCKER_CONFIG=$DOCKER_CONFIG" >> "$GITHUB_ENV"
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin >/dev/null 2>&1
+      - name: Non-sensitive PRIVATE package ACL preflight only
+        if: inputs.private_stage == 'acl-check'
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/probe"
+          printf 'FROM scratch\nLABEL org.opencontainers.image.source="https://github.com/uncloud-tech/colmap-runtime"\n' > "$RUNNER_TEMP/probe/Dockerfile"
+          docker buildx build --provenance=false --platform linux/amd64 --push --tag "ghcr.io/uncloud-tech/colmap-calibration-private:acl-$GITHUB_RUN_ID" --metadata-file "$RUNNER_TEMP/probe.json" "$RUNNER_TEMP/probe" >"$RUNNER_TEMP/probe.log" 2>&1
+          digest=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["containerimage.digest"])' "$RUNNER_TEMP/probe.json")
+          python3 scripts/private_build_input.py registry-check "$digest"
+          printf 'Private ACL/authorized-read/anonymous-denial passed: %s\n' "$digest"
+      - name: Refuse unreviewed JIT stage
+        if: inputs.private_stage == 'cap'
+        run: exit 2 # reviewed base FIRST; JIT workflow surface follows separately
+      - name: Verify PRIVATE package before unpacking sensitive source
+        if: inputs.private_stage == 'base'
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROBE_DIGEST: ${{ inputs.package_probe_digest }}
+        run: python3 scripts/private_build_input.py registry-check "$PROBE_DIGEST"
+      - name: Bounded private source input (never logged or published as CI artifact)
+        if: inputs.private_stage == 'base'
+        env:
+          PRIVATE_CONTEXT_1: ${{ secrets.COLMAP_PRIVATE_CONTEXT_1 }}
+          PRIVATE_CONTEXT_2: ${{ secrets.COLMAP_PRIVATE_CONTEXT_2 }}
+          CONTEXT_SHA256: ${{ inputs.context_sha256 }}
+        run: python3 scripts/private_build_input.py unpack "$CONTEXT_SHA256" "$RUNNER_TEMP/private-context"
+      - name: Fetch only immutable PUBLIC source archive
+        if: inputs.private_stage == 'base'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init -q "$RUNNER_TEMP/public-source"
+          git -C "$RUNNER_TEMP/public-source" fetch --quiet --depth=1 https://github.com/uncloud-tech/colmap.git 32070f41ddcc18c392cb4a3fa686073c926ecfd0
+          git -C "$RUNNER_TEMP/public-source" archive 32070f41ddcc18c392cb4a3fa686073c926ecfd0 > "$RUNNER_TEMP/private-context/baseline.tar"
+      - name: Build and CPU-gate only the specialization; no GPU/guest execution
+        if: inputs.private_stage == 'base'
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          log="$RUNNER_TEMP/private-build.log"
+          if ! bash -euo pipefail >"$log" 2>&1 <<'PRIVATE_BUILD'
+            docker buildx build --target payload-base --platform linux/amd64 --provenance=false --sbom=false --load --output "type=oci,dest=$RUNNER_TEMP/private-base.oci.tar,compression=gzip" --tag private-base:one "$RUNNER_TEMP/private-context"
+            python3 scripts/private_build_input.py oci-check "$RUNNER_TEMP/private-base.oci.tar" "$RUNNER_TEMP/verified-oci" > "$RUNNER_TEMP/oci-binding.json"
+            config=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["config_digest"])' "$RUNNER_TEMP/oci-binding.json")
+            test "$(docker image inspect private-base:one --format '{{.Id}}')" = "$config"
+            docker run --rm --network none --entrypoint /opt/colmap-python/bin/python private-base:one -c 'import os,threading,pathlib,benchmark; assert os.geteuid()==1000; assert threading.active_count()==1; assert not any(x in pathlib.Path("/proc/self/maps").read_text() for x in ("libcuda.so","libcudart.so"))'
+            docker run --rm --network none --entrypoint /opt/benchmark-node/bin/node private-base:one -e 'if(process.version!=="v24.22.0")throw Error("Node identity"); require("/opt/benchmark/benchmark/transport/node_modules/hyperswarm")'
+            docker run --rm --network none --entrypoint /opt/colmap-python/bin/python private-base:one -m unittest discover -s /opt/benchmark/tests -p 'test_calibration_*.py' -v
+            docker run --rm --network none --entrypoint /bin/sh private-base:one -c 'LD_LIBRARY_PATH=/opt/benchmark/lib ldd /opt/benchmark/bin/colmap > /tmp/benchmark-ldd && ! grep "not found" /tmp/benchmark-ldd && ! grep -E "site-packages/nvidia|cuda-12.9" /tmp/benchmark-ldd'
+            tag="ghcr.io/uncloud-tech/colmap-calibration-private:base-$GITHUB_RUN_ID"
+            # Push the measured immutable OCI layout, NOT daemon-recompressed --load bytes.
+            mkdir "$RUNNER_TEMP/frozen-publish"
+            printf 'FROM frozen\n' > "$RUNNER_TEMP/frozen-publish/Dockerfile"
+            manifest=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["manifest_digest"])' "$RUNNER_TEMP/oci-binding.json")
+            docker buildx build --platform linux/amd64 --provenance=false --sbom=false --build-context "frozen=oci-layout://$RUNNER_TEMP/verified-oci@$manifest" --output "type=image,name=$tag,push=true,oci-mediatypes=true,compression=gzip,force-compression=false" --metadata-file "$RUNNER_TEMP/published.json" "$RUNNER_TEMP/frozen-publish"
+            published=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["containerimage.digest"])' "$RUNNER_TEMP/published.json")
+            test "$published" = "$manifest"
+            printf '%s@%s\n' "ghcr.io/uncloud-tech/colmap-calibration-private" "$published" > "$RUNNER_TEMP/base-reference.txt"
+          PRIVATE_BUILD
+          then
+            echo 'Private build/CPU gate failed; no source/log/artifact publication.'
+            exit 1
+          fi
+          echo 'Secret-free private specialization built/CPU-gated. GPU/guest/JIT NOT qualified.'
+      - name: Remove ephemeral sensitive workspace and registry auth
+        if: always()
+        shell: bash
+        run: |
+          set +x
+          rm -rf -- "$RUNNER_TEMP/private-context" "$RUNNER_TEMP/registry-auth"
