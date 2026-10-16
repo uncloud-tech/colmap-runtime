@@ -28,38 +28,19 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("APT_REFRESH=${APT_REFRESH}", dockerfile)
         self.assertFalse(lock["rebuild_bit_identical"])
 
-    def test_image_does_not_break_vast_ssh_bootstrap(self):
-        """Incident 2026-09-28: deleting the SSH host keys made Vast's `sshd` start
-        fail ("no hostkeys available -- exiting") and its port-forward never
-        recovered, so readiness polling saw `connection refused` for the whole
-        window. A stock Ubuntu + openssh-server install ships host keys; the image
-        must not deviate from that."""
-        dockerfile = (ROOT / "image/Dockerfile").read_text()
-        for forbidden in (
-            "rm -f /etc/ssh/ssh_host",
-            "rm -rf /etc/ssh/ssh_host",
-            "ssh-keygen -R",
-            "PasswordAuthentication yes",
-        ):
-            self.assertNotIn(forbidden, dockerfile)
-        self.assertIn("openssh-server", dockerfile)
-        self.assertIn("mkdir -p /run/sshd", dockerfile)
-        # The platform starts sshd from the image at container start and does not
-        # generate host keys at runtime, so they must exist in the image.
-        self.assertIn("ssh-keygen -A", dockerfile)
-        # ...and the audit must tolerate exactly those host key paths, no more.
-        audit = (ROOT / "scripts/audit_image.py").read_text()
-        self.assertRegex(audit, r"""["']etc/ssh/ssh_host_rsa_key["'],""")
-        self.assertIn("SSH_HOST_KEY_PATHS", audit)
-        # Host keys must exist at build time. `ssh-keygen -A` is the safe
-        # "generate every missing host-key type" command; a bare delete leaves
-        # the image keyless and Vast's sshd then exits on first start.
-        # The platform starts sshd from the image at container start and does not
-        # generate host keys at runtime, so the image must ship them.
-        self.assertIn("ssh-keygen -A", dockerfile)
-        self.assertNotIn("/etc/init.d/ssh", dockerfile)
-        audit = (ROOT / "scripts/audit_image.py").read_text()
-        self.assertIn("SSH_HOST_KEY_PATHS", audit)
+    def test_base_recipe_has_no_baked_host_identity_pending_runtime_qualification(self):
+        """Source-only boundary; first-daemon Vast startup is not qualified here."""
+        dockerfile = (ROOT / 'image/Dockerfile').read_text()
+        apt_layer = dockerfile.split('RUN echo "APT_REFRESH=', 1)[1].split('\nENV PATH=', 1)[0]
+        self.assertIn('openssh-server', apt_layer)
+        self.assertIn('mkdir -p /run/sshd', apt_layer)
+        self.assertIn('rm -f /etc/ssh/ssh_host_*', apt_layer)
+        self.assertNotIn('ssh-keygen -A', dockerfile)
+        self.assertNotIn('PasswordAuthentication yes', dockerfile)
+        self.assertNotIn('SSH_HOST_KEY_PATHS', (ROOT / 'scripts/audit_image.py').read_text())
+        self.assertIn('AS preserved-payload', dockerfile)
+        self.assertIn('COPY --from=preserved-payload /opt/colmap-runtime /opt/colmap-runtime', dockerfile)
+        self.assertNotIn('COPY --from=preserved-payload / /', dockerfile)
 
     def test_babelstream_is_pinned_and_installed(self):
         """A measured GPU bandwidth figure must come from a pinned, proven tool.
@@ -82,7 +63,7 @@ class BuildContractTests(unittest.TestCase):
         )
         self.assertIn("sha256sum -c -", dockerfile)
         self.assertIn(
-            "COPY --from=babelstream /usr/local/bin/babelstream /usr/local/bin/babelstream",
+            "COPY --from=preserved-payload /usr/local/bin/babelstream /usr/local/bin/babelstream",
             dockerfile,
         )
         # BabelStream's own required flags, not CMake's ignored CMAKE_CUDA_ARCHITECTURES.
@@ -381,7 +362,7 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("if: inputs.publish", workflow)
         # BuildKit path: pinned setup action, registry cache, single-manifest
         # load, and a build that never pushes (publication stays gated).
-        self.assertIn("useblacksmith/setup-docker-builder@", workflow)
+        self.assertIn("docker/setup-buildx-action@", workflow)
         self.assertIn("docker buildx build", workflow)
         self.assertIn("--pull", workflow)
         self.assertIn("--provenance=false --sbom=false", workflow)
@@ -403,14 +384,22 @@ class BuildContractTests(unittest.TestCase):
                 workflow = (ROOT / ".github/workflows" / filename).read_text()
                 self.assertIn(f"runs-on: blacksmith-{cpus}vcpu-ubuntu-2404", workflow)
                 self.assertRegex(workflow, r"uses: actions/checkout@[0-9a-f]{40}\b")
-                self.assertRegex(
-                    workflow, r"uses: useblacksmith/setup-docker-builder@[0-9a-f]{40}\b"
-                )
+                if filename == 'build.yml':
+                    self.assertRegex(workflow, r'uses: docker/setup-buildx-action@[0-9a-f]{40}\b')
+                    self.assertIn('timeout-minutes: 25', workflow)
+                    self.assertNotIn('useblacksmith/setup-docker-builder@', workflow)
+                else:
+                    workflow = workflow.split('\n  specialization:', 1)[0]
+                    self.assertRegex(workflow, r'uses: useblacksmith/setup-docker-builder@[0-9a-f]{40}\b')
                 self.assertNotIn("useblacksmith/checkout@", workflow)
                 self.assertIn("persist-credentials: false", workflow)
-                self.assertIn("cache-key: ${{ github.repository }}/" + cache, workflow)
-                self.assertIn("nofallback: true", workflow)
-                self.assertIn("buildx-version: v0.37.2", workflow)
+                if filename != 'build.yml':
+                    self.assertIn("cache-key: ${{ github.repository }}/" + cache, workflow)
+                    self.assertIn("nofallback: true", workflow)
+                    self.assertIn("buildx-version: v0.37.2", workflow)
+                else:
+                    self.assertIn('version: v0.37.2', workflow)
+                    self.assertIn('cache-binary: false', workflow)
                 self.assertIn("docker buildx build", workflow)
                 self.assertIn("--load", workflow)
                 self.assertIn("type=registry,ref=$cache_ref", workflow)

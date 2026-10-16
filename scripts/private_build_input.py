@@ -83,15 +83,17 @@ def safe_proof(doctor,expanded,published):
  expected={'python_version':'3.14.7','pycolmap_version':'4.2.0','node_version':'v24.22.0','cuda_execution':'NOT_RUN'}
  if any(d.get(k)!=v for k,v in expected.items()) or d.get('native_science_rebuilt') is not False or d.get('private_fixed_seed0_equivalence') is not False:raise ValueError('CPU proof identity')
  base='ghcr.io/bu5hm4nn/colmap-runtime@sha256:fc9e5c3ef7685da3e2d0d09cf6e2afe6e3e9d047b6d5fd2610cce9d3c9af2fe4'
- if d.get('base_image')!=base or d['interface_probe_options']['max_image_size']!=-1 or d['fusion_interface_probe']!={'max_image_size':-1,'use_cache':True,'cache_size':1.0}:raise ValueError('CPU proof scope')
+ if d.get('native_payload_source_image',d.get('base_image'))!=base or d['interface_probe_options']['max_image_size']!=-1 or d['fusion_interface_probe']!={'max_image_size':-1,'use_cache':True,'cache_size':1.0}:raise ValueError('CPU proof scope')
  hashes=d['base_file_sha256'];names={'interpreter_sha256':'python/bin/python3.14','verifier_sha256':'verify_runtime.py','lock_sha256':'runtime-lock.json'}
  if set(hashes)!=set(names.values()) or any(not isinstance(v,str) or not re.fullmatch('[0-9a-f]{64}',v) for v in hashes.values()):raise ValueError('CPU proof hashes')
  size=Path(expanded).read_text()
  if not re.fullmatch('[0-9]{1,12}\\n?',size) or not 0<int(size)<=64*1024**3:raise ValueError('image size proof')
  digest=p['containerimage.digest']
  if not isinstance(digest,str) or not re.fullmatch('sha256:[0-9a-f]{64}',digest):raise ValueError('published proof digest')
+ carrier=d.get('carrier_image_ref')
+ if carrier is not None and (not isinstance(carrier,str) or not re.fullmatch(r'ghcr\.io/uncloud-tech/colmap-runtime@sha256:[a-f0-9]{64}',carrier)):raise ValueError('carrier proof identity')
  # Construct the complete output: never forward documents, logs, paths or unknown fields.
- return {'stage':'base','status':'cpu_api_passed','software':{k:d[k] for k in ('python_version','pycolmap_version','node_version')},'native_base_digest':base.split('@')[1],**{k:hashes[v] for k,v in names.items()},'expanded_image_bytes':int(size),'published_digest':digest,'passed_cpu_checks':['legacy_identity','installer_free_verifier','patchmatch_api','fusion_api','host_seed_api','node_module','sender_v2_abi'],'gpu_execution_validated':False}
+ return {'stage':'base','status':'cpu_api_passed','software':{k:d[k] for k in ('python_version','pycolmap_version','node_version')},'native_payload_digest':base.split('@')[1],'carrier_image_digest':carrier.split('@')[1] if carrier else None,**{k:hashes[v] for k,v in names.items()},'expanded_image_bytes':int(size),'published_digest':digest,'passed_cpu_checks':['legacy_identity','installer_free_verifier','patchmatch_api','fusion_api','host_seed_api','node_module','sender_v2_abi'],'gpu_execution_validated':False}
 
 def registry_check(digest):
  import urllib.request,urllib.error

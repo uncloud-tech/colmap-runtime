@@ -27,7 +27,9 @@ RUN echo "APT_REFRESH=${APT_REFRESH}" && \
     awk '$2 == "installed" && $1 ~ /-dev(:[^ ]+)?$/ { print "ERROR: runtime development package: " $1; bad=1 } END { exit bad }' /tmp/runtime-package-status && \
     rm -f /tmp/runtime-package-status && \
     rm -rf /var/lib/apt/lists/* && mkdir -p /run/sshd /opt/colmap-runtime && \
-    ssh-keygen -A
+    # openssh-server postinst may generate keys: remove them in THIS SAME RUN,
+    # before its layer is committed. Fresh runtime identity needs startup qualification.
+    rm -f /etc/ssh/ssh_host_*
 ENV PATH="/opt/colmap-runtime/python/bin:${PATH}" \
     PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 PIP_DISABLE_PIP_VERSION_CHECK=1 \
     LD_LIBRARY_PATH="/opt/colmap-runtime/python/lib/python3.14/site-packages/nvidia/cuda_runtime/lib:/opt/colmap-runtime/python/lib/python3.14/site-packages/nvidia/curand/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/cuda/lib64"
@@ -200,9 +202,12 @@ RUN curl --fail --location --retry 3 https://api.github.com/repos/UoB-HPC/BabelS
     fi \
  && install -m 0755 build/cuda-stream /usr/local/bin/babelstream
 
+# Reuse only the published application payload, NOT its OS/SSH ancestry.
+# Unreferenced compiler stages above are pruned by BuildKit, even on a cold cache.
+FROM ghcr.io/bu5hm4nn/colmap-runtime@sha256:fc9e5c3ef7685da3e2d0d09cf6e2afe6e3e9d047b6d5fd2610cce9d3c9af2fe4 AS preserved-payload
 FROM base AS runtime
-COPY --from=babelstream /usr/local/bin/babelstream /usr/local/bin/babelstream
-COPY --from=builder /opt/colmap-runtime /opt/colmap-runtime
+COPY --from=preserved-payload /usr/local/bin/babelstream /usr/local/bin/babelstream
+COPY --from=preserved-payload /opt/colmap-runtime /opt/colmap-runtime
 RUN python3.14 /opt/colmap-runtime/verify_runtime.py --mode cpu --require-installer-free --output /opt/colmap-runtime/runtime-manifest.json && \
     dpkg-query -W > /opt/colmap-runtime/system-packages.txt && \
     python3.14 -c 'from importlib.metadata import distributions; print("\n".join(sorted(d.metadata["Name"]+"=="+d.version for d in distributions())))' > /opt/colmap-runtime/python-packages.txt

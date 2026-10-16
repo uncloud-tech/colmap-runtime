@@ -30,32 +30,6 @@ PUBLIC_SELFTEST_HASHES = {
 }
 
 
-# SSH host keys are not credentials: they are world-readable the moment an
-# instance serves SSH, and Vast's ssh launch mode requires a stock sshd setup
-# (its startup starts sshd before any key-generation hook, and sshd exits when no
-# host keys exist - incident 2026-09-28). Deliberately narrow: exact paths only,
-# so this cannot be used to smuggle arbitrary key material.
-SSH_HOST_KEY_PATHS = {
-    "etc/ssh/ssh_host_rsa_key",
-    "etc/ssh/ssh_host_ecdsa_key",
-    "etc/ssh/ssh_host_ed25519_key",
-    "etc/ssh/ssh_host_mldsa44_ed25519_key",
-}
-
-
-# SSH host keys are not credentials: they are world-readable as soon as an
-# instance serves SSH, and the platform starts sshd from the image at container
-# start (it does not generate keys at runtime), so a keyless image makes sshd
-# exit with "no hostkeys available". Deliberately narrow: exact paths only, so
-# this cannot be used to smuggle arbitrary key material.
-SSH_HOST_KEY_PATHS = {
-    "etc/ssh/ssh_host_rsa_key",
-    "etc/ssh/ssh_host_ecdsa_key",
-    "etc/ssh/ssh_host_ed25519_key",
-    "etc/ssh/ssh_host_mldsa44_ed25519_key",
-}
-
-
 def check_member(name, data, final=True):
     path = PurePosixPath(name)
     if path.name.startswith(".env") or (
@@ -77,7 +51,7 @@ def check_member(name, data, final=True):
                 "lib/x86_64-linux-gnu/libgnutls.so.30.37.1",
             }
             and hashlib.sha256(match[0]).hexdigest() in PUBLIC_SELFTEST_HASHES
-        ) or str(path) in SSH_HOST_KEY_PATHS
+        )
         if not known:
             raise ValueError(
                 f"Unrecognized private-key material in image member: {name}"

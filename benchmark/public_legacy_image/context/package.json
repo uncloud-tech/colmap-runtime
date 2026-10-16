@@ -1,0 +1,1 @@
+{"name":"private-benchmark-holepunch","private":true,"type":"module","dependencies":{"hyperswarm":"4.17.2"},"scripts":{"test":"node --test transport.test.ts"}}
