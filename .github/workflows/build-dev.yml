@@ -168,8 +168,8 @@ jobs:
           retention-days: 14
   specialization:
     if: inputs.specialization == 'benchmark' && github.ref == 'refs/heads/ci/benchmark-specialization'
-    runs-on: ${{ inputs.private_stage == 'base' && 'blacksmith-32vcpu-ubuntu-2404' || 'blacksmith-4vcpu-ubuntu-2404' }}
-    timeout-minutes: ${{ inputs.private_stage == 'base' && 30 || 5 }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: ${{ inputs.private_stage == 'base' && 15 || 5 }}
     permissions:
       contents: read
       packages: write
@@ -228,14 +228,6 @@ jobs:
           PRIVATE_CONTEXT_2: ${{ secrets.COLMAP_PRIVATE_CONTEXT_2 }}
           CONTEXT_SHA256: ${{ inputs.context_sha256 }}
         run: python3 scripts/private_build_input.py unpack "$CONTEXT_SHA256" "$RUNNER_TEMP/private-context"
-      - name: Fetch only immutable PUBLIC source archive
-        if: inputs.private_stage == 'base'
-        shell: bash
-        run: |
-          set -euo pipefail
-          git init -q "$RUNNER_TEMP/public-source"
-          git -C "$RUNNER_TEMP/public-source" fetch --quiet --depth=1 https://github.com/uncloud-tech/colmap.git 32070f41ddcc18c392cb4a3fa686073c926ecfd0
-          git -C "$RUNNER_TEMP/public-source" archive 32070f41ddcc18c392cb4a3fa686073c926ecfd0 > "$RUNNER_TEMP/private-context/baseline.tar"
       - name: Build and CPU-gate only the specialization; no GPU/guest execution
         if: inputs.private_stage == 'base'
         shell: bash
@@ -248,10 +240,11 @@ jobs:
             python3 scripts/private_build_input.py oci-check "$RUNNER_TEMP/private-base.oci.tar" "$RUNNER_TEMP/verified-oci" > "$RUNNER_TEMP/oci-binding.json"
             config=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["config_digest"])' "$RUNNER_TEMP/oci-binding.json")
             test "$(docker image inspect private-base:one --format '{{.Id}}')" = "$config"
-            docker run --rm --network none --entrypoint /opt/colmap-python/bin/python private-base:one -c 'import os,threading,pathlib,benchmark; assert os.geteuid()==1000; assert threading.active_count()==1; assert not any(x in pathlib.Path("/proc/self/maps").read_text() for x in ("libcuda.so","libcudart.so"))'
-            docker run --rm --network none --entrypoint /opt/benchmark-node/bin/node private-base:one -e 'if(process.version!=="v24.22.0")throw Error("Node identity"); require("/opt/benchmark/benchmark/transport/node_modules/hyperswarm")'
-            docker run --rm --network none --entrypoint /opt/colmap-python/bin/python private-base:one -m unittest discover -s /opt/benchmark/tests -p 'test_calibration_*.py' -v
-            docker run --rm --network none --entrypoint /bin/sh private-base:one -c 'LD_LIBRARY_PATH=/opt/benchmark/lib ldd /opt/benchmark/bin/colmap > /tmp/benchmark-ldd && ! grep "not found" /tmp/benchmark-ldd && ! grep -E "site-packages/nvidia|cuda-12.9" /tmp/benchmark-ldd'
+            # Existing legacy native bytes/interface, plus only new sender dependencies.
+            # No source320 build, host-cgroup requirement or GPU execution here.
+            docker run --rm --network none --entrypoint /opt/colmap-runtime/python/bin/python3.14 private-base:one /opt/benchmark-transport/verify_image.py
+            # Actual expanded image layers (not a compressed-size/free-disk proxy).
+            docker image inspect private-base:one --format 'expanded_image_bytes={{.Size}}'
             tag="ghcr.io/uncloud-tech/colmap-calibration-private:base-$GITHUB_RUN_ID"
             # Push the measured immutable OCI layout, NOT daemon-recompressed --load bytes.
             mkdir "$RUNNER_TEMP/frozen-publish"
