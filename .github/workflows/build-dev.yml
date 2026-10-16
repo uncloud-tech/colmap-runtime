@@ -184,15 +184,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      # Ephemeral local builder, NOT Blacksmith's paid sticky-cache action.
-      # Live stable action4.4.1/BuildKit0.34.0 verified official2026-10-16;
-      # Buildx0.37.2 is the existing project's reproducibility pin.
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
-        with:
-          version: v0.37.2
-          driver: docker-container
-          driver-opts: image=moby/buildkit@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
-          cache-binary: false
+      # Set DOCKER_CONFIG BEFORE Buildx: its builder selection/state lives there too.
       - name: Private registry authentication (no persisted checkout credentials)
         env:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -205,6 +197,15 @@ jobs:
           mkdir -m700 "$DOCKER_CONFIG"
           echo "DOCKER_CONFIG=$DOCKER_CONFIG" >> "$GITHUB_ENV"
           printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin >/dev/null 2>&1
+      # Ephemeral local builder, NOT Blacksmith's paid sticky-cache action.
+      # Live stable action4.4.1/BuildKit0.34.0 verified official2026-10-16;
+      # Buildx0.37.2 is the existing project's reproducibility pin.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+        with:
+          version: v0.37.2
+          driver: docker-container
+          driver-opts: image=moby/buildkit@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+          cache-binary: false
       - name: Non-sensitive PRIVATE package ACL preflight only
         if: inputs.private_stage == 'acl-check'
         env:
@@ -335,4 +336,6 @@ jobs:
         shell: bash
         run: |
           set +x
-          rm -rf -- "$RUNNER_TEMP/private-context" "$RUNNER_TEMP/registry-auth"
+          rm -rf -- "$RUNNER_TEMP/private-context"
+          # Native Buildx post-action still needs builder state; remove auth only.
+          rm -f -- "$RUNNER_TEMP/registry-auth/config.json"
