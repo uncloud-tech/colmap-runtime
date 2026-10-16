@@ -37,7 +37,7 @@ class SecurityGateTests(unittest.TestCase):
         self.assertIn("FROM base AS runtime", text)
         self.assertIn("upgrade -y", text)
         self.assertIn(
-            "COPY --from=builder /opt/colmap-runtime /opt/colmap-runtime", text
+            "COPY --from=preserved-payload /opt/colmap-runtime /opt/colmap-runtime", text
         )
         self.assertIn("--require-installer-free", text)
 
