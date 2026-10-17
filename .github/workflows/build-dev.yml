@@ -18,8 +18,12 @@ on:
         options: [public-base, acl-check, base, cap]
         default: public-base
       runtime_base_ref:
-        description: Actual inspected key-free carrier ghcr.io/uncloud-tech/colmap-runtime@sha256 digest
+        description: Immutable inspected carrier digest (tools-only overlay uses its locked accepted transport parent)
         type: string
+      public_tools_overlay:
+        description: Tiny cuobjdump-only overlay on the locked accepted public transport image; no private CLI baked
+        type: boolean
+        default: false
       context_sha256:
         description: SHA256 of bounded private gzip context (never secret contents)
         type: string
@@ -184,6 +188,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Refuse tools flag outside the public image stage
+        if: inputs.public_tools_overlay && inputs.private_stage != 'public-base'
+        run: exit 2
       # Set DOCKER_CONFIG BEFORE Buildx: its builder selection/state lives there too.
       - name: Private registry authentication (no persisted checkout credentials)
         env:
@@ -290,14 +297,21 @@ jobs:
         shell: bash
         env:
           RUNTIME_BASE_REF: ${{ inputs.runtime_base_ref }}
+          PUBLIC_TOOLS_OVERLAY: ${{ inputs.public_tools_overlay }}
         run: |
           set -euo pipefail
-          python3 -c 'import os,re; assert re.fullmatch(r"ghcr\.io/uncloud-tech/colmap-runtime@sha256:[a-f0-9]{64}", os.environ["RUNTIME_BASE_REF"])'
-          docker buildx build --build-arg "BASE=$RUNTIME_BASE_REF" --target payload-base --platform linux/amd64 --provenance=false --sbom=false --load --output "type=oci,dest=$RUNNER_TEMP/public-base.oci.tar,compression=gzip" --tag public-base:one benchmark/public_legacy_image/context
+          python3 -c 'import os,re; package="colmap-calibration-private" if os.environ["PUBLIC_TOOLS_OVERLAY"]=="true" else "colmap-runtime"; assert re.fullmatch(r"ghcr\.io/uncloud-tech/"+package+r"@sha256:[a-f0-9]{64}", os.environ["RUNTIME_BASE_REF"])'
+          context=benchmark/public_legacy_image/context
+          doctor=/opt/benchmark-transport/verify_image.py
+          if [[ "$PUBLIC_TOOLS_OVERLAY" == true ]]; then
+            context=benchmark/public_cuda_tools/context
+            doctor=/opt/benchmark-tools/cuobjdump/verify_tools.py
+          fi
+          docker buildx build --build-arg "BASE=$RUNTIME_BASE_REF" --target payload-base --platform linux/amd64 --provenance=false --sbom=false --load --output "type=oci,dest=$RUNNER_TEMP/public-base.oci.tar,compression=gzip" --tag public-base:one "$context"
           python3 scripts/private_build_input.py oci-check "$RUNNER_TEMP/public-base.oci.tar" "$RUNNER_TEMP/public-verified-oci" > "$RUNNER_TEMP/public-oci-binding.json"
           config=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["config_digest"])' "$RUNNER_TEMP/public-oci-binding.json")
           test "$(docker image inspect public-base:one --format '{{.Id}}')" = "$config"
-          docker run --rm --network none --entrypoint /opt/colmap-runtime/python/bin/python3.14 public-base:one /opt/benchmark-transport/verify_image.py > "$RUNNER_TEMP/public-cpu-doctor.json"
+          docker run --rm --network none --entrypoint /opt/colmap-runtime/python/bin/python3.14 public-base:one "$doctor" > "$RUNNER_TEMP/public-cpu-doctor.json"
           docker image inspect public-base:one --format '{{.Size}}' > "$RUNNER_TEMP/public-expanded-bytes"
           python3 scripts/private_build_input.py cpu-proof "$RUNNER_TEMP/public-cpu-doctor.json" "$RUNNER_TEMP/public-expanded-bytes" > "$RUNNER_TEMP/public-cpu-proof.json"
           docker save public-base:one -o "$RUNNER_TEMP/public-layer-audit.tar"

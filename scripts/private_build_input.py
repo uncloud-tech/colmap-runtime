@@ -93,7 +93,15 @@ def safe_proof(doctor,expanded,published=None):
  carrier=d.get('carrier_image_ref')
  if carrier is not None and (not isinstance(carrier,str) or not re.fullmatch(r'ghcr\.io/uncloud-tech/colmap-runtime@sha256:[a-f0-9]{64}',carrier)):raise ValueError('carrier proof identity')
  # Construct the complete output: never forward documents, logs, paths or unknown fields.
- return {'stage':'base','status':'cpu_api_passed','software':{k:d[k] for k in ('python_version','pycolmap_version','node_version')},'native_payload_digest':base.split('@')[1],'carrier_image_digest':carrier.split('@')[1] if carrier else None,**{k:hashes[v] for k,v in names.items()},'expanded_image_bytes':int(size),'published_digest':digest,'passed_cpu_checks':['legacy_identity','installer_free_verifier','patchmatch_api','fusion_api','host_seed_api','node_module','sender_v2_abi'],'gpu_execution_validated':False}
+ proof={'stage':'base','status':'cpu_api_passed','software':{k:d[k] for k in ('python_version','pycolmap_version','node_version')},'native_payload_digest':base.split('@')[1],'carrier_image_digest':carrier.split('@')[1] if carrier else None,**{k:hashes[v] for k,v in names.items()},'expanded_image_bytes':int(size),'published_digest':digest,'passed_cpu_checks':['legacy_identity','installer_free_verifier','patchmatch_api','fusion_api','host_seed_api','node_module','sender_v2_abi'],'gpu_execution_validated':False}
+ if 'cuobjdump' in d:
+  tool=d['cuobjdump'];arches=tool.get('known_public_architectures');parent=d.get('tools_parent_image_ref')
+  if tool.get('version')!='12.8.90' or tool.get('binary_sha256')!='9d515ac6f60c246ef63fe87b0a95d209b00ff3e25b716f8f263520010760e8f8' or tool.get('known_public_fatbin')!='BabelStream' or tool.get('closure_unresolved') is not False or tool.get('optimized_cli_baked_in_image') is not False or tool.get('optimized_cli_dual_arch_proof_required_at_artifact_and_launch') is not True:raise ValueError('inspector proof identity/scope')
+  if not isinstance(arches,list) or not all(isinstance(a,str) and re.fullmatch('[0-9]{2,3}',a) for a in arches) or not {'86','89'}.issubset(arches):raise ValueError('public fatbin proof')
+  if not isinstance(parent,str) or not re.fullmatch(r'ghcr\.io/uncloud-tech/colmap-calibration-private@sha256:[a-f0-9]{64}',parent):raise ValueError('tools parent proof')
+  proof.update(cuobjdump_version=tool['version'],cuobjdump_binary_sha256=tool['binary_sha256'],known_public_babel_architectures=arches,tools_parent_image_digest=parent.split('@')[1],optimized_cli_baked_in_image=False,optimized_cli_artifact_and_launch_proof_required=True)
+  proof['passed_cpu_checks']+=['cuobjdump_identity','cuobjdump_version','public_babel_fatbin_86_89']
+ return proof
 
 def security_summary(path):
  with Path(path).open('rb') as stream:raw=stream.read(32*1024**2+1)

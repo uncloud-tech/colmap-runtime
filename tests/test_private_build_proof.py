@@ -11,6 +11,11 @@ class SafeProofTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as temp:
    d,paths=self.inputs(Path(temp));out=safe_proof(*paths);encoded=json.dumps(out)
    self.assertNotIn('DO_NOT_EMIT',encoded);self.assertNotIn(temp,encoded);self.assertNotIn('python/bin',encoded);self.assertEqual(out['expanded_image_bytes'],12345);self.assertFalse(out['gpu_execution_validated']);self.assertEqual(out['status'],'cpu_api_passed')
+ def test_tools_proof_is_allowlisted_and_never_claims_baked_optimized_cli(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   d,paths=self.inputs(Path(tmp));d['cuobjdump']={'version':'12.8.90','binary_sha256':'9d515ac6f60c246ef63fe87b0a95d209b00ff3e25b716f8f263520010760e8f8','known_public_fatbin':'BabelStream','known_public_architectures':['86','89'],'closure_unresolved':False,'optimized_cli_baked_in_image':False,'optimized_cli_dual_arch_proof_required_at_artifact_and_launch':True,'arbitrary':'DO_NOT_FORWARD'};d['tools_parent_image_ref']='ghcr.io/uncloud-tech/colmap-calibration-private@sha256:'+'b'*64;paths[0].write_text(json.dumps(d));out=safe_proof(*paths);self.assertEqual(out['cuobjdump_version'],'12.8.90');self.assertFalse(out['optimized_cli_baked_in_image']);self.assertNotIn('DO_NOT_FORWARD',json.dumps(out))
+   d['cuobjdump']['optimized_cli_baked_in_image']=True;paths[0].write_text(json.dumps(d))
+   with self.assertRaises(ValueError):safe_proof(*paths)
  def test_cpu_evidence_before_publication_does_not_fabricate_published_digest(self):
   with tempfile.TemporaryDirectory() as tmp:
    d,paths=self.inputs(Path(tmp));out=safe_proof(paths[0],paths[1]);self.assertIsNone(out['published_digest']);self.assertEqual(out['status'],'cpu_api_passed')

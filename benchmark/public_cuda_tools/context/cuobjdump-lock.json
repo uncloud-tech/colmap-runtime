@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "cuda_release": "12.8.1",
+  "parent_image_ref": "ghcr.io/uncloud-tech/colmap-calibration-private@sha256:5b222ede5467c4c7706956ceff034aa6e3f224658f7e1c81fefd5e743e9b333b",
+  "tool": "cuobjdump",
+  "version": "12.8.90",
+  "purpose": "Match frozen CUDA12.8.1 NVCC12.8.93; intentional compatibility pin, not latest-toolkit claim",
+  "metadata_url": "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.8.1.json",
+  "archive_url": "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cuobjdump/linux-x86_64/cuda_cuobjdump-linux-x86_64-12.8.90-archive.tar.xz",
+  "archive_bytes": 207644,
+  "archive_sha256": "dbf41355a0f7a8aa491c1839a6c6ff8df02cdb6c6eefd66360543616c1b4980f",
+  "executable_bytes": 568992,
+  "executable_sha256": "9d515ac6f60c246ef63fe87b0a95d209b00ff3e25b716f8f263520010760e8f8",
+  "license_bytes": 63021,
+  "license_sha256": "e2c71babfd18a8e69542dd7e9ca018f9caa438094001a58e6bc4d8c999bf0d07",
+  "license_basis": "Bundled CUDA Toolkit Supplement 2.3 Linux-specific unmodified object redistribution; preserve full NVIDIA LICENSE and third-party notices",
+  "runtime_base_dependencies": [
+    "libpthread.so.0",
+    "libdl.so.2",
+    "libm.so.6",
+    "libc.so.6",
+    "ld-linux-x86-64.so.2"
+  ]
+}
